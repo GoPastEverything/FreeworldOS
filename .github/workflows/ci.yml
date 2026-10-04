@@ -38,8 +38,20 @@ jobs:
           set -e
 
           cat boot-serial.log
+
+          # Success requires the bootstrap completion marker.
           grep -Fq "FreeWorldOS: bootstrap initialization complete" boot-serial.log
 
+          # A panic at any point invalidates the boot, even if the completion
+          # marker appeared earlier in the log.
+          if grep -Fq "KERNEL PANIC" boot-serial.log; then
+            echo "kernel panic detected during M0 boot" >&2
+            exit 1
+          fi
+
+          # M0 intentionally halts after initialization, so timeout(1) normally
+          # terminates QEMU. A natural QEMU exit is also fine if a later
+          # milestone adds one.
           if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
             echo "unexpected QEMU status: $QEMU_STATUS" >&2
             exit "$QEMU_STATUS"
