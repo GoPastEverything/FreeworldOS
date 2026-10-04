@@ -66,7 +66,7 @@ docs/
 - **M0:** ✅ boot x86_64 under QEMU; serial output; panic path
 - **M1:** ✅ GDT/TSS/IDT, exception handling, hardened bootstrap frame allocation, page map/unmap, NX and W^X on FreeWorld-created mappings
 - **M2:** ✅ PIC/APIC bring-up, uncached LAPIC mapping, PIT calibration, first `sti`, periodic tick delivery, and generic `rt::time` hook
-- **M3:** heap + FW object/handle core + capability skeleton
+- **M3:** ◐ reusable kernel heap + first native object + generational handle table + READ/WRITE rights + close/reclamation proof implemented on branch
 - **M3.5:** task stacks + saved context + deterministic scheduler/context switching built on M3 primitives
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
@@ -75,4 +75,4 @@ docs/
 - **M8:** FW_MODULE loader and Bridge ABI v1
 - **M9:** RegCube transactional state core and WinFacet registry projection
 
-See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline, `docs/milestones/M1.md` for the frozen M1 proof, and `docs/milestones/M2.md` for the M2 interrupt/time proof.
+See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline and `docs/milestones/` for the frozen M1/M2 proofs and current M3 ownership proof.

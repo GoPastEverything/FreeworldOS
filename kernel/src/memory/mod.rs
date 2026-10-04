@@ -1,3 +1,5 @@
+pub mod heap;
+
 pub const PAGE_SIZE: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

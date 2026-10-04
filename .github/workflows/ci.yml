@@ -16,7 +16,7 @@ jobs:
           components: llvm-tools-preview,rust-src
           targets: x86_64-unknown-none,x86_64-unknown-uefi
 
-      - name: Build default M1 image
+      - name: Build default kernel image
         shell: bash
         run: |
           set -euo pipefail
@@ -28,11 +28,11 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-default-bios.img
 
-      - name: Build M1 image with self-tests
+      - name: Build kernel image with self-tests
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -44,7 +44,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
 
-      - name: Boot default M1 BIOS image
+      - name: Boot default BIOS image
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +72,7 @@ jobs:
             exit "$QEMU_STATUS"
           fi
 
-      - name: Boot M1 BIOS image and verify memory + exception paths
+      - name: Boot self-test BIOS image and verify milestone proofs
         shell: bash
         run: |
           set -euo pipefail
@@ -85,6 +85,8 @@ jobs:
           cat selftest-boot-serial.log
 
           grep -Fq "FreeWorldOS: M1 memory self-test: passed" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M3 heap self-test: passed" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M3 object self-test: passed reuse_iterations=[1-9][0-9]* duplicate_subset=ok shared_lifetime=ok table_full_drop=ok live_objects=0 live_heap_allocations=0" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 foundation online" selftest-boot-serial.log

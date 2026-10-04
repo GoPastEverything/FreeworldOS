@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 mod arch;
 mod exec;
@@ -33,6 +36,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M1 memory initialization failed: {error:?}");
     }
 
+    if let Err(error) = memory::heap::init() {
+        panic!("M3 heap initialization failed: {error:?}");
+    }
+
+    #[cfg(feature = "m3-ci-self-test")]
+    {
+        if let Err(error) = memory::heap::ci_self_test() {
+            panic!("M3 heap self-test failed: {error:?}");
+        }
+        arch::serial::println("FreeWorldOS: M3 heap self-test: passed");
+    }
+
     if let Err(error) = arch::interrupt_controller::init() {
         panic!("M2 interrupt-controller initialization failed: {error:?}");
     }
@@ -57,7 +72,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M2 APIC timer delivery proof failed: {error:?}");
     }
 
-    object::init();
+    if let Err(error) = object::init() {
+        panic!("M3 object initialization failed: {error:?}");
+    }
+
+    #[cfg(feature = "m3-ci-self-test")]
+    {
+        if let Err(error) = object::ci_self_test() {
+            panic!("M3 object self-test failed: {error:?}");
+        }
+    }
+
     vfs::init();
     state::init();
     exec::init();
@@ -67,6 +92,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::serial::println("FreeWorldOS: M1 foundation online");
     arch::serial::println("FreeWorldOS: bootstrap initialization complete");
     arch::halt_loop()
+}
+
+#[alloc_error_handler]
+fn alloc_error(layout: core::alloc::Layout) -> ! {
+    panic!("kernel heap allocation failed: {layout:?}");
 }
 
 #[panic_handler]

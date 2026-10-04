@@ -7,7 +7,7 @@ use x86_64::{
 };
 
 use super::{
-    apic, pic,
+    apic, interrupt_context, pic,
     gdt::{
         DOUBLE_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
     },
@@ -88,12 +88,14 @@ fn log_frame(label: &str, stack_frame: InterruptStackFrame) {
 }
 
 fn fatal_no_error(label: &str, stack_frame: InterruptStackFrame) -> ! {
+    let _scope = interrupt_context::enter();
     fatal_marker();
     log_frame(label, stack_frame);
     halt_loop()
 }
 
 fn fatal_with_error(label: &str, stack_frame: InterruptStackFrame, error_code: u64) -> ! {
+    let _scope = interrupt_context::enter();
     fatal_marker();
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: {label} error={error_code:#x}\n{stack_frame:#?}\n"
@@ -141,6 +143,7 @@ error_handler!(vmm_communication_exception, "#VC VMM communication");
 error_handler!(security_exception, "#SX security");
 
 extern "x86-interrupt" fn breakpoint(stack_frame: InterruptStackFrame) {
+    let _scope = interrupt_context::enter();
     serial::println("FreeWorldOS: EXCEPTION: #BP breakpoint");
     serial::write_fmt(format_args!("{stack_frame:#?}\n"));
 }
@@ -151,6 +154,7 @@ extern "x86-interrupt" fn breakpoint(stack_frame: InterruptStackFrame) {
 /// that can fault. A fault that returns can unblock NMIs before this handler has
 /// returned, allowing a nested NMI to reuse and overwrite the same IST stack.
 extern "x86-interrupt" fn non_maskable_interrupt(_stack_frame: InterruptStackFrame) {
+    let _scope = interrupt_context::enter();
     serial::println("FreeWorldOS: EXCEPTION: NMI");
 }
 
@@ -158,6 +162,7 @@ extern "x86-interrupt" fn double_fault(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
+    let _scope = interrupt_context::enter();
     fatal_marker();
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: #DF double fault error={error_code:#x}\n{stack_frame:#?}\n"
@@ -166,6 +171,7 @@ extern "x86-interrupt" fn double_fault(
 }
 
 extern "x86-interrupt" fn machine_check(stack_frame: InterruptStackFrame) -> ! {
+    let _scope = interrupt_context::enter();
     fatal_marker();
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: #MC machine check\n{stack_frame:#?}\n"
@@ -177,6 +183,7 @@ extern "x86-interrupt" fn page_fault(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    let _scope = interrupt_context::enter();
     fatal_marker();
     match Cr2::read() {
         Ok(address) => serial::write_fmt(format_args!(
@@ -191,15 +198,18 @@ extern "x86-interrupt" fn page_fault(
 }
 
 extern "x86-interrupt" fn pic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
+    let _scope = interrupt_context::enter();
     serial::println("FreeWorldOS: IRQ: masked legacy PIC vector");
 }
 
 extern "x86-interrupt" fn apic_timer_interrupt(_stack_frame: InterruptStackFrame) {
+    let _scope = interrupt_context::enter();
     // Interrupt-context invariant: no allocation, locks, serial formatting,
     // page mapping, or scheduler work. M2 proves only atomic tick delivery.
     apic::timer_interrupt();
 }
 
 extern "x86-interrupt" fn apic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
+    let _scope = interrupt_context::enter();
     // xAPIC spurious interrupts do not require EOI.
 }
