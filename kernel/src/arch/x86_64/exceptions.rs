@@ -29,14 +29,12 @@ lazy_static! {
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
 
-        idt[9].set_handler_fn(reserved_9);
         idt.invalid_tss.set_handler_fn(invalid_tss);
         idt.segment_not_present.set_handler_fn(segment_not_present);
         idt.stack_segment_fault.set_handler_fn(stack_segment_fault);
         idt.general_protection_fault
             .set_handler_fn(general_protection_fault);
         idt.page_fault.set_handler_fn(page_fault);
-        idt[15].set_handler_fn(reserved_15);
         idt.x87_floating_point.set_handler_fn(x87_floating_point);
         idt.alignment_check.set_handler_fn(alignment_check);
         idt.machine_check.set_handler_fn(machine_check);
@@ -44,20 +42,11 @@ lazy_static! {
         idt.virtualization.set_handler_fn(virtualization);
         idt.cp_protection_exception
             .set_handler_fn(cp_protection_exception);
-
-        idt[22].set_handler_fn(reserved_22);
-        idt[23].set_handler_fn(reserved_23);
-        idt[24].set_handler_fn(reserved_24);
-        idt[25].set_handler_fn(reserved_25);
-        idt[26].set_handler_fn(reserved_26);
-        idt[27].set_handler_fn(reserved_27);
-
         idt.hv_injection_exception
             .set_handler_fn(hv_injection_exception);
         idt.vmm_communication_exception
             .set_handler_fn(vmm_communication_exception);
         idt.security_exception.set_handler_fn(security_exception);
-        idt[31].set_handler_fn(reserved_31);
 
         idt
     };
@@ -114,19 +103,10 @@ no_error_handler!(overflow, "#OF overflow");
 no_error_handler!(bound_range_exceeded, "#BR bound range exceeded");
 no_error_handler!(invalid_opcode, "#UD invalid opcode");
 no_error_handler!(device_not_available, "#NM device not available");
-no_error_handler!(reserved_9, "reserved vector 9");
-no_error_handler!(reserved_15, "reserved vector 15");
 no_error_handler!(x87_floating_point, "#MF x87 floating point");
 no_error_handler!(simd_floating_point, "#XM SIMD floating point");
 no_error_handler!(virtualization, "#VE virtualization");
-no_error_handler!(reserved_22, "reserved vector 22");
-no_error_handler!(reserved_23, "reserved vector 23");
-no_error_handler!(reserved_24, "reserved vector 24");
-no_error_handler!(reserved_25, "reserved vector 25");
-no_error_handler!(reserved_26, "reserved vector 26");
-no_error_handler!(reserved_27, "reserved vector 27");
 no_error_handler!(hv_injection_exception, "#HV hypervisor injection");
-no_error_handler!(reserved_31, "reserved vector 31");
 
 error_handler!(invalid_tss, "#TS invalid TSS");
 error_handler!(segment_not_present, "#NP segment not present");
