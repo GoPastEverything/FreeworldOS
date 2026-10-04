@@ -33,12 +33,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M1 memory initialization failed: {error:?}");
     }
 
+    #[cfg(feature = "m1-ci-exception-test")]
+    {
+        arch::serial::println("FreeWorldOS: M1 exception self-test: trigger #BP");
+        arch::exceptions::trigger_test_breakpoint();
+        arch::serial::println("FreeWorldOS: M1 exception self-test: resumed");
+    }
+
     object::init();
     vfs::init();
     state::init();
     exec::init();
     rt::init();
 
+    arch::serial::println("FreeWorldOS: M1 foundation online");
     arch::serial::println("FreeWorldOS: bootstrap initialization complete");
     arch::halt_loop()
 }

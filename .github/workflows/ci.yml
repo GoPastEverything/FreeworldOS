@@ -16,15 +16,15 @@ jobs:
           components: llvm-tools-preview,rust-src
           targets: x86_64-unknown-none,x86_64-unknown-uefi
 
-      - name: Build boot images
-        run: cargo build
+      - name: Build M1 boot images with exception self-test
+        run: cargo build --features m1-ci-exception-test
 
       - name: Install QEMU
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
 
-      - name: Boot M0 BIOS image and verify serial marker
+      - name: Boot M1 BIOS image and verify exception path
         shell: bash
         run: |
           set -euo pipefail
@@ -39,19 +39,16 @@ jobs:
 
           cat boot-serial.log
 
-          # Success requires the bootstrap completion marker.
+          grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" boot-serial.log
+          grep -Fq "FreeWorldOS: M1 exception self-test: resumed" boot-serial.log
+          grep -Fq "FreeWorldOS: M1 foundation online" boot-serial.log
           grep -Fq "FreeWorldOS: bootstrap initialization complete" boot-serial.log
 
-          # A panic at any point invalidates the boot, even if the completion
-          # marker appeared earlier in the log.
           if grep -Fq "KERNEL PANIC" boot-serial.log; then
-            echo "kernel panic detected during M0 boot" >&2
+            echo "kernel panic detected during M1 boot" >&2
             exit 1
           fi
 
-          # M0 intentionally halts after initialization, so timeout(1) normally
-          # terminates QEMU. A natural QEMU exit is also fine if a later
-          # milestone adds one.
           if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
             echo "unexpected QEMU status: $QEMU_STATUS" >&2
             exit "$QEMU_STATUS"

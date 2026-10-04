@@ -8,6 +8,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+m1-ci-exception-test = ["kernel/m1-ci-exception-test"]
+
 [dependencies]
 ovmf-prebuilt = "=0.2.9"
 
