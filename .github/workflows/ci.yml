@@ -86,7 +86,7 @@ jobs:
 
           grep -Fq "FreeWorldOS: M1 memory self-test: passed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M3 heap self-test: passed" selftest-boot-serial.log
-          grep -Eq "FreeWorldOS: M3 object self-test: passed reuse_iterations=[1-9][0-9]* live_objects=0 live_heap_allocations=0" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M3 object self-test: passed reuse_iterations=[1-9][0-9]* duplicate_subset=ok shared_lifetime=ok table_full_drop=ok live_objects=0 live_heap_allocations=0" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 foundation online" selftest-boot-serial.log

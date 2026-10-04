@@ -1,5 +1,6 @@
 mod apic;
 mod gdt;
+mod interrupt_context;
 mod pic;
 mod pit;
 pub mod exceptions;
@@ -28,6 +29,10 @@ pub fn timer_period_ns() -> Option<u64> {
 
 pub fn disable_interrupts() {
     interrupts::disable();
+}
+
+pub fn in_interrupt() -> bool {
+    interrupt_context::in_interrupt()
 }
 
 pub fn halt_loop() -> ! {

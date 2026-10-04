@@ -89,6 +89,7 @@ struct HandleEntry {
 
 struct HandleSlot {
     generation: u32,
+    retired: bool,
     entry: Option<HandleEntry>,
 }
 
@@ -96,11 +97,17 @@ struct HandleTable {
     slots: [HandleSlot; MAX_HANDLES],
 }
 
+enum DuplicateFailure {
+    Handle(HandleError),
+    TableFull(Arc<FwObject>),
+}
+
 impl HandleTable {
     fn new() -> Self {
         Self {
             slots: core::array::from_fn(|_| HandleSlot {
                 generation: 1,
+                retired: false,
                 entry: None,
             }),
         }
@@ -110,16 +117,16 @@ impl HandleTable {
         &mut self,
         object: Arc<FwObject>,
         rights: Rights,
-    ) -> Result<Handle, HandleError> {
+    ) -> Result<Handle, Arc<FwObject>> {
         for (index, slot) in self.slots.iter_mut().enumerate() {
-            if slot.entry.is_none() {
+            if !slot.retired && slot.entry.is_none() {
                 let handle = Handle::from_parts(index, slot.generation);
                 slot.entry = Some(HandleEntry { object, rights });
                 return Ok(handle);
             }
         }
 
-        Err(HandleError::TableFull)
+        Err(object)
     }
 
     fn get(
@@ -130,7 +137,7 @@ impl HandleTable {
         let (index, generation) = handle.parts().ok_or(HandleError::InvalidHandle)?;
         let slot = &self.slots[index];
 
-        if slot.generation != generation {
+        if slot.retired || slot.generation != generation {
             return Err(HandleError::InvalidHandle);
         }
 
@@ -145,23 +152,61 @@ impl HandleTable {
         Ok(Arc::clone(&entry.object))
     }
 
+    fn duplicate(
+        &mut self,
+        handle: Handle,
+        new_rights: Rights,
+    ) -> Result<Handle, DuplicateFailure> {
+        let object = {
+            let (index, generation) = handle
+                .parts()
+                .ok_or(DuplicateFailure::Handle(HandleError::InvalidHandle))?;
+            let slot = &self.slots[index];
+
+            if slot.retired || slot.generation != generation {
+                return Err(DuplicateFailure::Handle(HandleError::InvalidHandle));
+            }
+
+            let entry = slot
+                .entry
+                .as_ref()
+                .ok_or(DuplicateFailure::Handle(HandleError::InvalidHandle))?;
+
+            if !entry.rights.contains(new_rights) {
+                return Err(DuplicateFailure::Handle(HandleError::AccessDenied {
+                    required: new_rights,
+                    granted: entry.rights,
+                }));
+            }
+
+            Arc::clone(&entry.object)
+        };
+
+        self.insert(object, new_rights)
+            .map_err(DuplicateFailure::TableFull)
+    }
+
     fn close(&mut self, handle: Handle) -> Result<Arc<FwObject>, HandleError> {
         let (index, generation) = handle.parts().ok_or(HandleError::InvalidHandle)?;
         let slot = &mut self.slots[index];
 
-        if slot.generation != generation {
+        if slot.retired || slot.generation != generation {
             return Err(HandleError::InvalidHandle);
         }
 
         let entry = slot.entry.take().ok_or(HandleError::InvalidHandle)?;
-        slot.generation = next_generation(slot.generation);
+
+        if slot.generation == u32::MAX {
+            // Never wrap a generation back to 1. Once all 32 bits have been
+            // consumed for a slot, retire it permanently so an ancient handle
+            // value can never become valid again.
+            slot.retired = true;
+        } else {
+            slot.generation += 1;
+        }
+
         Ok(entry.object)
     }
-}
-
-const fn next_generation(current: u32) -> u32 {
-    let next = current.wrapping_add(1);
-    if next == 0 { 1 } else { next }
 }
 
 struct TableStorage(UnsafeCell<MaybeUninit<HandleTable>>);
@@ -213,7 +258,17 @@ pub fn insert(
     object: Arc<FwObject>,
     rights: Rights,
 ) -> Result<Handle, HandleError> {
-    with_table(|table| table.insert(object, rights))?
+    let result = with_table(|table| table.insert(object, rights))?;
+
+    match result {
+        Ok(handle) => Ok(handle),
+        Err(object) => {
+            // Drop outside TABLE_LOCK: object destruction can release heap
+            // memory and must never run while the handle table is locked.
+            drop(object);
+            Err(HandleError::TableFull)
+        }
+    }
 }
 
 pub fn get(
@@ -221,6 +276,25 @@ pub fn get(
     required: Rights,
 ) -> Result<Arc<FwObject>, HandleError> {
     with_table(|table| table.get(handle, required))?
+}
+
+pub fn duplicate(
+    handle: Handle,
+    new_rights: Rights,
+) -> Result<Handle, HandleError> {
+    let result = with_table(|table| table.duplicate(handle, new_rights))?;
+
+    match result {
+        Ok(handle) => Ok(handle),
+        Err(DuplicateFailure::Handle(error)) => Err(error),
+        Err(DuplicateFailure::TableFull(object)) => {
+            // As with insert(), release the cloned Arc only after TABLE_LOCK is
+            // gone. A full table must not turn object destruction into locked
+            // heap activity.
+            drop(object);
+            Err(HandleError::TableFull)
+        }
+    }
 }
 
 pub fn close(handle: Handle) -> Result<(), HandleError> {
