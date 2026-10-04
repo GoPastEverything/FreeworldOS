@@ -175,7 +175,7 @@ pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
                 start: frame.start_address().as_u64(),
             })
             .ok_or(MemoryError::OutOfFrames)
-    })
+    })?
 }
 
 pub unsafe fn map_page(
@@ -224,7 +224,7 @@ pub unsafe fn map_page(
             Err(MapToError::ParentEntryHugePage) => Err(MemoryError::ParentHugePage),
             Err(MapToError::PageAlreadyMapped(_)) => Err(MemoryError::PageAlreadyMapped),
         }
-    })
+    })?
 }
 
 pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
@@ -247,7 +247,7 @@ pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
                 Err(MemoryError::InvalidFrameAddress)
             }
         }
-    })
+    })?
 }
 
 fn with_manager<R>(
