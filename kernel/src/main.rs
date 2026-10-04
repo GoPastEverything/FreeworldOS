@@ -4,20 +4,34 @@
 
 mod arch;
 mod exec;
+mod memory;
 mod object;
 mod rt;
 mod state;
 mod vfs;
 
-use bootloader_api::{entry_point, BootInfo};
+use bootloader_api::{
+    config::{BootloaderConfig, Mapping},
+    entry_point, BootInfo,
+};
 use core::panic::PanicInfo;
 
-entry_point!(kernel_main);
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::early_init(boot_info);
     arch::serial::println("FreeWorldOS: kernel entry");
     arch::serial::println("FreeWorldOS: x86_64 bootstrap active");
+
+    if let Err(error) = memory::init(boot_info) {
+        panic!("M1 memory initialization failed: {error:?}");
+    }
 
     object::init();
     vfs::init();
