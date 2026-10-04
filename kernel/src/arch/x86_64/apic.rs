@@ -126,21 +126,20 @@ pub fn init() -> Result<(), ApicError> {
         if max_lvt < 4 {
             return Err(ApicError::InsufficientLvtEntries { max_lvt });
         }
-        if max_lvt >= 6 {
-            write(REG_LVT_CMCI, LVT_MASKED);
-        }
-        if max_lvt >= 1 {
-            write(REG_LVT_THERMAL, LVT_MASKED);
-        }
-        if max_lvt >= 2 {
+        // max_lvt is the highest implemented LVT index, not a count.
+        // Timer/LINT0/LINT1/error exist on the baseline APIC we accept.
+        write(REG_LVT_LINT0, LVT_MASKED);
+        write(REG_LVT_LINT1, LVT_DELIVERY_NMI);
+        write(REG_LVT_ERROR, LVT_MASKED);
+
+        if max_lvt >= 4 {
             write(REG_LVT_PERFORMANCE, LVT_MASKED);
         }
-        if max_lvt >= 3 {
-            write(REG_LVT_LINT0, LVT_MASKED);
-        }
-        write(REG_LVT_LINT1, LVT_DELIVERY_NMI);
         if max_lvt >= 5 {
-            write(REG_LVT_ERROR, LVT_MASKED);
+            write(REG_LVT_THERMAL, LVT_MASKED);
+        }
+        if max_lvt >= 6 {
+            write(REG_LVT_CMCI, LVT_MASKED);
         }
 
         // The timer exists and has an IDT vector, but remains masked and stopped

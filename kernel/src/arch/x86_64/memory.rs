@@ -17,9 +17,9 @@ use x86_64::{
         model_specific::{Efer, EferFlags},
     },
     structures::paging::{
-        mapper::{FlagUpdateError, MapToError, UnmapError},
+        mapper::{FlagUpdateError, MapToError, MappedFrame, Translate, TranslateResult, UnmapError},
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags,
-        PhysFrame as X86PhysFrame, Size2MiB, Size4KiB,
+        PhysFrame as X86PhysFrame, Size1GiB, Size2MiB, Size4KiB,
     },
     PhysAddr, VirtAddr,
 };
@@ -317,25 +317,52 @@ pub fn harden_direct_map_device_alias(
             .physical_memory_offset
             .checked_add(physical_address)
             .ok_or(MemoryError::InvalidVirtualAddress)?;
-        let page = Page::<Size2MiB>::containing_address(
-            VirtAddr::try_new(virtual_address)
-                .map_err(|_| MemoryError::InvalidVirtualAddress)?,
-        );
+        let virtual_address = VirtAddr::try_new(virtual_address)
+            .map_err(|_| MemoryError::InvalidVirtualAddress)?;
 
-        let flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::NO_EXECUTE
-            | PageTableFlags::WRITE_THROUGH
-            | PageTableFlags::NO_CACHE;
-
-        match unsafe { manager.mapper.update_flags(page, flags) } {
-            Ok(flush) => {
-                flush.flush();
-                Ok(true)
+        match manager.mapper.translate(virtual_address) {
+            TranslateResult::NotMapped => Ok(false),
+            TranslateResult::InvalidFrameAddress(_) => {
+                Err(MemoryError::InvalidFrameAddress)
             }
-            Err(FlagUpdateError::PageNotMapped) => Ok(false),
-            Err(FlagUpdateError::ParentEntryHugePage) => {
-                Err(MemoryError::DirectMapUnexpectedPageSize)
+            TranslateResult::Mapped { frame, flags, .. } => {
+                let device_flags = flags
+                    | PageTableFlags::NO_EXECUTE
+                    | PageTableFlags::WRITE_THROUGH
+                    | PageTableFlags::NO_CACHE;
+
+                match frame {
+                    MappedFrame::Size4KiB(_) => {
+                        let page = Page::<Size4KiB>::containing_address(virtual_address);
+                        match unsafe { manager.mapper.update_flags(page, device_flags) } {
+                            Ok(flush) => {
+                                flush.flush();
+                                Ok(true)
+                            }
+                            Err(FlagUpdateError::PageNotMapped) => Ok(false),
+                            Err(FlagUpdateError::ParentEntryHugePage) => {
+                                Err(MemoryError::DirectMapUnexpectedPageSize)
+                            }
+                        }
+                    }
+                    MappedFrame::Size2MiB(_) => {
+                        let page = Page::<Size2MiB>::containing_address(virtual_address);
+                        match unsafe { manager.mapper.update_flags(page, device_flags) } {
+                            Ok(flush) => {
+                                flush.flush();
+                                Ok(true)
+                            }
+                            Err(FlagUpdateError::PageNotMapped) => Ok(false),
+                            Err(FlagUpdateError::ParentEntryHugePage) => {
+                                Err(MemoryError::DirectMapUnexpectedPageSize)
+                            }
+                        }
+                    }
+                    MappedFrame::Size1GiB(_) => {
+                        let _page = Page::<Size1GiB>::containing_address(virtual_address);
+                        Err(MemoryError::DirectMapUnexpectedPageSize)
+                    }
+                }
             }
         }
     })?
