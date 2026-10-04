@@ -98,6 +98,9 @@ pub enum MemoryError {
     ParentHugePage,
     InvalidFrameAddress,
     WriteExecuteDenied,
+    NoSelfTestVirtualAddress,
+    SelfTestDataMismatch,
+    SelfTestFrameMismatch,
 }
 
 pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
@@ -128,4 +131,57 @@ pub unsafe fn map_page(
 
 pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
     crate::arch::memory::unmap_page(virtual_address)
+}
+
+#[cfg(feature = "m1-ci-self-test")]
+pub fn ci_self_test() -> Result<(), MemoryError> {
+    const TEST_VIRTUAL_ADDRESSES: [u64; 4] = [
+        0x0000_4000_0000_0000,
+        0x0000_5000_0000_0000,
+        0x0000_6000_0000_0000,
+        0x0000_7000_0000_0000,
+    ];
+    const TEST_PATTERN: u64 = 0x4657_4f53_4d31_5445;
+
+    if PagePermissions::new(true, true, false)
+        != Err(MemoryError::WriteExecuteDenied)
+    {
+        return Err(MemoryError::WriteExecuteDenied);
+    }
+
+    let frame = allocate_frame()?;
+    let permissions = PagePermissions::read_write();
+
+    let mut mapped_address = None;
+    for address in TEST_VIRTUAL_ADDRESSES {
+        match unsafe { map_page(address, frame, permissions) } {
+            Ok(()) => {
+                mapped_address = Some(address);
+                break;
+            }
+            Err(MemoryError::PageAlreadyMapped) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    let address = mapped_address.ok_or(MemoryError::NoSelfTestVirtualAddress)?;
+
+    // SAFETY: The page was just mapped RW and is reserved exclusively for this
+    // self-test. Volatile raw accesses avoid creating aliased Rust references.
+    let observed = unsafe {
+        let pointer = address as *mut u64;
+        core::ptr::write_volatile(pointer, TEST_PATTERN);
+        core::ptr::read_volatile(pointer)
+    };
+
+    if observed != TEST_PATTERN {
+        return Err(MemoryError::SelfTestDataMismatch);
+    }
+
+    let unmapped = unmap_page(address)?;
+    if unmapped != frame {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    Ok(())
 }

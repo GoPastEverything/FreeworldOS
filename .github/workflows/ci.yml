@@ -16,15 +16,15 @@ jobs:
           components: llvm-tools-preview,rust-src
           targets: x86_64-unknown-none,x86_64-unknown-uefi
 
-      - name: Build M1 boot images with exception self-test
-        run: cargo build --features m1-ci-exception-test
+      - name: Build M1 boot images with self-tests
+        run: cargo build --features m1-ci-self-test
 
       - name: Install QEMU
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
 
-      - name: Boot M1 BIOS image and verify exception path
+      - name: Boot M1 BIOS image and verify memory + exception paths
         shell: bash
         run: |
           set -euo pipefail
@@ -39,6 +39,7 @@ jobs:
 
           cat boot-serial.log
 
+          grep -Fq "FreeWorldOS: M1 memory self-test: passed" boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" boot-serial.log
           grep -Fq "FreeWorldOS: M1 foundation online" boot-serial.log

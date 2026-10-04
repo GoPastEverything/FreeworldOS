@@ -33,8 +33,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M1 memory initialization failed: {error:?}");
     }
 
-    #[cfg(feature = "m1-ci-exception-test")]
+    #[cfg(feature = "m1-ci-self-test")]
     {
+        if let Err(error) = memory::ci_self_test() {
+            panic!("M1 memory self-test failed: {error:?}");
+        }
+        arch::serial::println("FreeWorldOS: M1 memory self-test: passed");
+
         arch::serial::println("FreeWorldOS: M1 exception self-test: trigger #BP");
         arch::exceptions::trigger_test_breakpoint();
         arch::serial::println("FreeWorldOS: M1 exception self-test: resumed");
