@@ -7,7 +7,7 @@ use x86_64::{
 };
 
 use super::{
-    apic,
+    apic, pic,
     gdt::{
         DOUBLE_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
     },
@@ -57,6 +57,10 @@ lazy_static! {
         idt.vmm_communication_exception
             .set_handler_fn(vmm_communication_exception);
         idt.security_exception.set_handler_fn(security_exception);
+
+        for vector in pic::MASTER_VECTOR_OFFSET..=(pic::SLAVE_VECTOR_OFFSET + 7) {
+            idt[vector].set_handler_fn(pic_spurious_interrupt);
+        }
 
         idt[apic::TIMER_VECTOR].set_handler_fn(apic_timer_interrupt);
         idt[apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_interrupt);
@@ -184,6 +188,10 @@ extern "x86-interrupt" fn page_fault(
     }
 
     halt_loop()
+}
+
+extern "x86-interrupt" fn pic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
+    serial::println("FreeWorldOS: IRQ: masked legacy PIC vector");
 }
 
 extern "x86-interrupt" fn apic_timer_interrupt(_stack_frame: InterruptStackFrame) {

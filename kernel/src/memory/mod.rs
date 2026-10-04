@@ -6,10 +6,17 @@ pub struct PhysFrame {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryCachePolicy {
+    Normal,
+    Device,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PagePermissions {
     writable: bool,
     executable: bool,
     user: bool,
+    cache: MemoryCachePolicy,
 }
 
 impl PagePermissions {
@@ -18,6 +25,7 @@ impl PagePermissions {
             writable: false,
             executable: false,
             user: false,
+            cache: MemoryCachePolicy::Normal,
         }
     }
 
@@ -26,6 +34,7 @@ impl PagePermissions {
             writable: true,
             executable: false,
             user: false,
+            cache: MemoryCachePolicy::Normal,
         }
     }
 
@@ -34,6 +43,7 @@ impl PagePermissions {
             writable: false,
             executable: true,
             user: false,
+            cache: MemoryCachePolicy::Normal,
         }
     }
 
@@ -42,6 +52,7 @@ impl PagePermissions {
             writable: true,
             executable: false,
             user: true,
+            cache: MemoryCachePolicy::Normal,
         }
     }
 
@@ -50,6 +61,7 @@ impl PagePermissions {
             writable: false,
             executable: true,
             user: true,
+            cache: MemoryCachePolicy::Normal,
         }
     }
 
@@ -58,15 +70,42 @@ impl PagePermissions {
         executable: bool,
         user: bool,
     ) -> Result<Self, MemoryError> {
+        Self::new_with_cache(
+            writable,
+            executable,
+            user,
+            MemoryCachePolicy::Normal,
+        )
+    }
+
+    pub const fn new_with_cache(
+        writable: bool,
+        executable: bool,
+        user: bool,
+        cache: MemoryCachePolicy,
+    ) -> Result<Self, MemoryError> {
         if writable && executable {
             return Err(MemoryError::WriteExecuteDenied);
+        }
+        if matches!(cache, MemoryCachePolicy::Device) && executable {
+            return Err(MemoryError::ExecutableDeviceMappingDenied);
         }
 
         Ok(Self {
             writable,
             executable,
             user,
+            cache,
         })
+    }
+
+    pub const fn device_read_write() -> Self {
+        Self {
+            writable: true,
+            executable: false,
+            user: false,
+            cache: MemoryCachePolicy::Device,
+        }
     }
 
     pub const fn writable(self) -> bool {
@@ -79,6 +118,10 @@ impl PagePermissions {
 
     pub const fn user(self) -> bool {
         self.user
+    }
+
+    pub const fn cache_policy(self) -> MemoryCachePolicy {
+        self.cache
     }
 }
 
@@ -96,6 +139,10 @@ pub enum MemoryError {
     ParentHugePage,
     InvalidFrameAddress,
     WriteExecuteDenied,
+    ExecutableDeviceMappingDenied,
+    DirectMapUnexpectedPageSize,
+    PageAttributeTableUnsupported,
+    DeviceCachePolicyUnavailable,
     NoSelfTestVirtualAddress,
     SelfTestDataMismatch,
     SelfTestFrameMismatch,

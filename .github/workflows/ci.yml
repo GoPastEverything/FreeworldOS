@@ -58,6 +58,7 @@ jobs:
 
           grep -Fq "FreeWorldOS: M1 foundation online" default-boot-serial.log
           grep -Fq "FreeWorldOS: bootstrap initialization complete" default-boot-serial.log
+          grep -Eq "apic: timer calibration .*median_hz=[1-9][0-9]*" default-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" default-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" default-boot-serial.log             || grep -Fq "FreeWorldOS: EXCEPTION:" default-boot-serial.log; then
             echo "unexpected panic or exception during default M1 boot" >&2
@@ -86,6 +87,7 @@ jobs:
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 foundation online" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: bootstrap initialization complete" selftest-boot-serial.log
+          grep -Eq "apic: timer calibration .*median_hz=[1-9][0-9]*" selftest-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" selftest-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" selftest-boot-serial.log; then
             echo "panic or fatal exception detected during M1 self-test boot" >&2

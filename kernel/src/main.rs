@@ -29,17 +29,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::serial::println("FreeWorldOS: kernel entry");
     arch::serial::println("FreeWorldOS: x86_64 bootstrap active");
 
-    let physical_memory_offset = boot_info.physical_memory_offset.into_option();
-
     if let Err(error) = arch::memory::init(boot_info) {
         panic!("M1 memory initialization failed: {error:?}");
     }
 
-    let physical_memory_offset = physical_memory_offset
-        .expect("M2 requires the configured physical-memory mapping");
-
-    if let Err(error) = arch::interrupt_controller::init(physical_memory_offset) {
+    if let Err(error) = arch::interrupt_controller::init() {
         panic!("M2 interrupt-controller initialization failed: {error:?}");
+    }
+
+    if let Err(error) = arch::interrupt_controller::calibrate_timer() {
+        panic!("M2 APIC timer calibration failed: {error:?}");
     }
 
     #[cfg(feature = "m1-ci-self-test")]

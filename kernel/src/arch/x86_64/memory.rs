@@ -1,4 +1,5 @@
 use core::{
+    arch::x86_64::__cpuid,
     cell::UnsafeCell,
     hint::spin_loop,
     mem::MaybeUninit,
@@ -16,18 +17,21 @@ use x86_64::{
         model_specific::{Efer, EferFlags},
     },
     structures::paging::{
-        mapper::{MapToError, UnmapError},
+        mapper::{FlagUpdateError, MapToError, UnmapError},
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags,
-        PhysFrame as X86PhysFrame, Size4KiB,
+        PhysFrame as X86PhysFrame, Size2MiB, Size4KiB,
     },
     PhysAddr, VirtAddr,
 };
 
 use crate::memory::{
-    MemoryError, PagePermissions, PhysFrame, PAGE_SIZE,
+    MemoryCachePolicy, MemoryError, PagePermissions, PhysFrame, PAGE_SIZE,
 };
 
 const MIN_ALLOCATABLE_PHYS: u64 = 0x10_0000;
+const CPUID_FEATURE_PAT: u32 = 1 << 16;
+const IA32_PAT_MSR: u32 = 0x277;
+const PAT_STRONG_UNCACHEABLE: u8 = 0x00;
 
 struct ManagerStorage(UnsafeCell<MaybeUninit<X86MemoryManager>>);
 
@@ -159,6 +163,7 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
 struct X86MemoryManager {
     mapper: OffsetPageTable<'static>,
     allocator: BootFrameAllocator,
+    physical_memory_offset: u64,
 }
 
 pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
@@ -207,7 +212,11 @@ pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
         let regions: &'static [MemoryRegion] = &boot_info.memory_regions;
         let allocator = BootFrameAllocator::new(regions, kernel, ramdisk);
 
-        let manager = X86MemoryManager { mapper, allocator };
+        let manager = X86MemoryManager {
+            mapper,
+            allocator,
+            physical_memory_offset,
+        };
 
         // SAFETY: The storage is written exactly once while the manager lock is
         // held, before MANAGER_INITIALIZED becomes visible.
@@ -272,6 +281,12 @@ pub unsafe fn map_page(
         if !permissions.executable() {
             flags |= PageTableFlags::NO_EXECUTE;
         }
+        if matches!(permissions.cache_policy(), MemoryCachePolicy::Device) {
+            validate_device_cache_policy()?;
+            // x86 PAT index 3 (PWT=1, PCD=1, PAT=0) has been verified as
+            // StrongUncacheable above.
+            flags |= PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE;
+        }
 
         let result = unsafe {
             manager
@@ -287,6 +302,41 @@ pub unsafe fn map_page(
             Err(MapToError::FrameAllocationFailed) => Err(MemoryError::OutOfFrames),
             Err(MapToError::ParentEntryHugePage) => Err(MemoryError::ParentHugePage),
             Err(MapToError::PageAlreadyMapped(_)) => Err(MemoryError::PageAlreadyMapped),
+        }
+    })?
+}
+
+
+pub fn harden_direct_map_device_alias(
+    physical_address: u64,
+) -> Result<bool, MemoryError> {
+    validate_device_cache_policy()?;
+
+    with_manager(|manager| {
+        let virtual_address = manager
+            .physical_memory_offset
+            .checked_add(physical_address)
+            .ok_or(MemoryError::InvalidVirtualAddress)?;
+        let page = Page::<Size2MiB>::containing_address(
+            VirtAddr::try_new(virtual_address)
+                .map_err(|_| MemoryError::InvalidVirtualAddress)?,
+        );
+
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::WRITE_THROUGH
+            | PageTableFlags::NO_CACHE;
+
+        match unsafe { manager.mapper.update_flags(page, flags) } {
+            Ok(flush) => {
+                flush.flush();
+                Ok(true)
+            }
+            Err(FlagUpdateError::PageNotMapped) => Ok(false),
+            Err(FlagUpdateError::ParentEntryHugePage) => {
+                Err(MemoryError::DirectMapUnexpectedPageSize)
+            }
         }
     })?
 }
@@ -312,6 +362,40 @@ pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
             }
         }
     })?
+}
+
+
+fn validate_device_cache_policy() -> Result<(), MemoryError> {
+    let features = __cpuid(1);
+    if features.edx & CPUID_FEATURE_PAT == 0 {
+        return Err(MemoryError::PageAttributeTableUnsupported);
+    }
+
+    let pat = unsafe { read_msr(IA32_PAT_MSR) };
+    let entry3 = ((pat >> (3 * 8)) & 0xff) as u8;
+    if entry3 != PAT_STRONG_UNCACHEABLE {
+        return Err(MemoryError::DeviceCachePolicyUnavailable);
+    }
+
+    Ok(())
+}
+
+unsafe fn read_msr(msr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+
+    // SAFETY: Caller verifies architectural support for the requested MSR.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    (u64::from(high) << 32) | u64::from(low)
 }
 
 fn with_manager<R>(

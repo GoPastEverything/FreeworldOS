@@ -1,6 +1,7 @@
 mod apic;
 mod gdt;
 mod pic;
+mod pit;
 pub mod exceptions;
 pub mod interrupt_controller;
 pub mod memory;

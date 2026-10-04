@@ -65,7 +65,7 @@ docs/
 
 - **M0:** ✅ boot x86_64 under QEMU; serial output; panic path
 - **M1:** ✅ GDT/TSS/IDT, exception handling, hardened bootstrap frame allocation, page map/unmap, NX and W^X on FreeWorld-created mappings
-- **M2:** timer/APIC bring-up and deterministic scheduler
+- **M2:** ◐ PIC/APIC bring-up and measured timer in progress; scheduler/tick delivery next
 - **M3:** heap + FW object/handle core + capability skeleton
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
@@ -74,4 +74,4 @@ docs/
 - **M8:** FW_MODULE loader and Bridge ABI v1
 - **M9:** RegCube transactional state core and WinFacet registry projection
 
-See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline and `docs/milestones/M1.md` for the M1 implementation/CI proof.
+See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline, `docs/milestones/M1.md` for the frozen M1 proof, and `docs/milestones/M2.md` for current interrupt/timer status.

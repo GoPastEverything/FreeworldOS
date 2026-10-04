@@ -9,7 +9,7 @@ pub enum InterruptControllerError {
     Apic(apic::ApicError),
 }
 
-pub fn init(physical_memory_offset: u64) -> Result<(), InterruptControllerError> {
+pub fn init() -> Result<(), InterruptControllerError> {
     if interrupts::are_enabled() {
         return Err(InterruptControllerError::InterruptsAlreadyEnabled);
     }
@@ -21,7 +21,7 @@ pub fn init(physical_memory_offset: u64) -> Result<(), InterruptControllerError>
         pic::SLAVE_VECTOR_OFFSET
     ));
 
-    apic::init(physical_memory_offset).map_err(InterruptControllerError::Apic)?;
+    apic::init().map_err(InterruptControllerError::Apic)?;
 
     // M2 controller bring-up is deliberately pre-STI. A later commit whose
     // sole job is enabling interrupts will prove timer delivery and tick count.
@@ -29,4 +29,13 @@ pub fn init(physical_memory_offset: u64) -> Result<(), InterruptControllerError>
     serial::println("  irq: local APIC online; IF remains clear");
 
     Ok(())
+}
+
+
+pub fn calibrate_timer() -> Result<apic::TimerCalibration, InterruptControllerError> {
+    if interrupts::are_enabled() {
+        return Err(InterruptControllerError::InterruptsAlreadyEnabled);
+    }
+
+    apic::calibrate_timer_against_pit().map_err(InterruptControllerError::Apic)
 }
