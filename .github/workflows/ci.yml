@@ -5,14 +5,42 @@ on:
   pull_request:
 
 jobs:
-  build:
+  build-and-boot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-15
           components: llvm-tools-preview,rust-src
           targets: x86_64-unknown-none,x86_64-unknown-uefi
+
       - name: Build boot images
         run: cargo build
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Boot M0 BIOS image and verify serial marker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BIOS_IMAGE="$(find target -type f -name 'freeworldos-bios.img' -print -quit)"
+          test -n "$BIOS_IMAGE"
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s             qemu-system-x86_64               -drive "format=raw,file=$BIOS_IMAGE"               -serial stdio               -display none               -no-reboot               -no-shutdown               -m 256M             > boot-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat boot-serial.log
+          grep -Fq "FreeWorldOS: bootstrap initialization complete" boot-serial.log
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
