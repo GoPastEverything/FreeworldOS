@@ -193,7 +193,7 @@ Still open: whether the bulk of Linux syscall semantics runs in kernel space, a 
 
 ---
 
-## 9. FreeWorld native API
+## 9. FreeWorld native API and callgate
 
 FreeWorldOS defines its own first-class API.
 
@@ -210,6 +210,35 @@ fw_cube_*
 ~~~
 
 Compatibility facets translate toward these primitives. Neither Win32/NT nor Linux UAPI becomes the FreeWorld native API.
+
+Native userspace reaches the kernel through a kernel-supplied callgate rather than embedding the private kernel-entry protocol in applications or libraries.
+
+Runtime call path:
+
+~~~text
+application
+    |
+    v
+libfw / fwlibc
+    |
+    v
+fw-sys
+    |
+    v
+kernel-mapped FreeWorld callgate
+    |
+    v
+private kernel-entry protocol
+    |
+    v
+kernel
+~~~
+
+Only the callgate issues the architecture syscall instruction. fw-sys is an unsafe wrapper around stable callgate symbols; it does not contain raw native syscall numbers or the syscall instruction.
+
+The public callgate ABI is versioned/stable. The private callgate-to-kernel protocol may change without recompiling all native applications.
+
+See NATIVE-ABI-v0.1.md for the locked native-userspace decisions.
 
 ---
 
@@ -516,7 +545,7 @@ Current sequence:
 - M2: timer/APIC bring-up and measurable deterministic scheduler foundation
 - M3: heap, FW object/handle core, capability skeleton
 - M4: VFS mount/object graph, binary-safe names, RAM filesystem, namespace projections
-- M5: user mode and FreeWorld-native syscall/trap ABI
+- M5: native ELF loader, ring 3, kernel-mapped callgate, fw-abi/fw-sys/libfw minimum, and a no_std FreeWorld userspace hello
 - M6: ELF decoder and initial LinuxFacet syscall interception
 - M7: PE decoder and initial WinFacet DLL/API surface
 - M8: FW_MODULE loader and Bridge ABI v1
@@ -542,20 +571,18 @@ These are bootstrap dependencies, not FreeWorldOS architectural dependencies.
 Intentionally open:
 
 1. final kernel architecture terminology: monolithic, microkernel, hybrid, or a FreeWorld-specific description
-2. FreeWorld native executable format
-3. exact FW_OBJECT semantics
-4. native IPC model
-5. native driver architecture
-6. native graphics/windowing architecture
-7. Bridge ABI IDL
-8. RegCube physical storage engine
-9. WinFacet compatibility target baseline
-10. LinuxFacet UAPI baseline
-11. libc strategy
-12. graphics compatibility strategy
-13. minimum Win32/NT surface for first PE application milestone
-14. ARM64 implementation schedule
-15. cross-ISA translation architecture
+2. exact FW_OBJECT semantics
+3. native IPC model
+4. native driver architecture
+5. native graphics/windowing architecture
+6. Bridge ABI IDL
+7. RegCube physical storage engine
+8. WinFacet compatibility target baseline
+9. LinuxFacet UAPI baseline
+10. graphics compatibility strategy
+11. minimum Win32/NT surface for first PE application milestone
+12. ARM64 implementation schedule
+13. cross-ISA translation architecture
 
 ---
 
