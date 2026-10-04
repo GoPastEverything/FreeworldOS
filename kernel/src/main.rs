@@ -29,7 +29,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::serial::println("FreeWorldOS: kernel entry");
     arch::serial::println("FreeWorldOS: x86_64 bootstrap active");
 
-    if let Err(error) = memory::init(boot_info) {
+    if let Err(error) = arch::memory::init(boot_info) {
         panic!("M1 memory initialization failed: {error:?}");
     }
 
