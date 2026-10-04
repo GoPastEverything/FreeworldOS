@@ -7,6 +7,7 @@ use x86_64::{
 };
 
 use super::{
+    apic,
     gdt::{
         DOUBLE_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
     },
@@ -56,6 +57,9 @@ lazy_static! {
         idt.vmm_communication_exception
             .set_handler_fn(vmm_communication_exception);
         idt.security_exception.set_handler_fn(security_exception);
+
+        idt[apic::TIMER_VECTOR].set_handler_fn(apic_timer_interrupt);
+        idt[apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_interrupt);
 
         idt
     };
@@ -180,4 +184,15 @@ extern "x86-interrupt" fn page_fault(
     }
 
     halt_loop()
+}
+
+extern "x86-interrupt" fn apic_timer_interrupt(_stack_frame: InterruptStackFrame) {
+    // The timer is masked until calibration and the later STI/tick-count commit.
+    // This EOI keeps the handler correct if a pending timer interrupt is ever
+    // delivered after the LVT is unmasked.
+    apic::eoi();
+}
+
+extern "x86-interrupt" fn apic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
+    // xAPIC spurious interrupts do not require EOI.
 }

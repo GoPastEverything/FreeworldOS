@@ -29,8 +29,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::serial::println("FreeWorldOS: kernel entry");
     arch::serial::println("FreeWorldOS: x86_64 bootstrap active");
 
+    let physical_memory_offset = boot_info.physical_memory_offset.into_option();
+
     if let Err(error) = arch::memory::init(boot_info) {
         panic!("M1 memory initialization failed: {error:?}");
+    }
+
+    let physical_memory_offset = physical_memory_offset
+        .expect("M2 requires the configured physical-memory mapping");
+
+    if let Err(error) = arch::interrupt_controller::init(physical_memory_offset) {
+        panic!("M2 interrupt-controller initialization failed: {error:?}");
     }
 
     #[cfg(feature = "m1-ci-self-test")]
@@ -51,6 +60,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     exec::init();
     rt::init();
 
+    arch::serial::println("FreeWorldOS: M2 interrupt controllers prepared; IF clear");
     arch::serial::println("FreeWorldOS: M1 foundation online");
     arch::serial::println("FreeWorldOS: bootstrap initialization complete");
     arch::halt_loop()

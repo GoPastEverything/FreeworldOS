@@ -1,5 +1,8 @@
+mod apic;
 mod gdt;
+mod pic;
 pub mod exceptions;
+pub mod interrupt_controller;
 pub mod memory;
 pub mod serial;
 
