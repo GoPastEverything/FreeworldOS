@@ -18,6 +18,18 @@ pub fn early_init(_boot_info: &mut BootInfo) {
     serial::println("  arch: FreeWorld GDT/TSS/IDT online");
 }
 
+pub fn timer_ticks() -> u64 {
+    apic::timer_ticks()
+}
+
+pub fn timer_period_ns() -> Option<u64> {
+    apic::timer_period_ns()
+}
+
+pub fn disable_interrupts() {
+    interrupts::disable();
+}
+
 pub fn halt_loop() -> ! {
     loop {
         // SAFETY: HLT is intentional while the bootstrap kernel has no runnable tasks.

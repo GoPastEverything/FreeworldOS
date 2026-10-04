@@ -71,6 +71,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    arch::disable_interrupts();
     arch::serial::println("FreeWorldOS: KERNEL PANIC");
     arch::serial::write_fmt(format_args!("{info}\n"));
     arch::halt_loop()

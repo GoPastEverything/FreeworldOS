@@ -40,6 +40,7 @@ const LAPIC_VIRTUAL_BASE: u64 = 0xffff_8000_0000_0000;
 
 static APIC_BASE_VIRTUAL: AtomicU64 = AtomicU64::new(0);
 static APIC_TIMER_HZ: AtomicU64 = AtomicU64::new(0);
+static APIC_TIMER_PERIOD_NS: AtomicU64 = AtomicU64::new(0);
 static APIC_TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,6 +254,12 @@ pub fn program_periodic_timer(target_hz: u64) -> Result<u32, ApicError> {
     let initial_count = u32::try_from(count)
         .map_err(|_| ApicError::TimerInitialCountOverflow { count })?;
 
+    let period_ns = count
+        .checked_mul(1_000_000_000)
+        .ok_or(ApicError::TimerRateOverflow)?
+        / counter_hz;
+
+    APIC_TIMER_PERIOD_NS.store(period_ns, Ordering::Release);
     APIC_TIMER_TICKS.store(0, Ordering::Release);
 
     // SAFETY: Calibration has completed with IF clear. The handler and IDT
@@ -277,6 +284,11 @@ pub fn timer_interrupt() {
 
 pub fn timer_ticks() -> u64 {
     APIC_TIMER_TICKS.load(Ordering::Acquire)
+}
+
+pub fn timer_period_ns() -> Option<u64> {
+    let period_ns = APIC_TIMER_PERIOD_NS.load(Ordering::Acquire);
+    (period_ns != 0).then_some(period_ns)
 }
 
 pub fn eoi() {

@@ -51,7 +51,7 @@ kernel/src/
   exec/       execution profiles and later image/facet dispatch
   memory/     architecture-neutral physical/virtual memory interface
   object/     native FW process/module/handle model
-  rt/         deterministic scheduler/task/time core
+  rt/         architecture-neutral runtime time core; scheduler lands after M3
   state/      RegCube
   vfs/        native namespace and path/object projections
 
@@ -65,8 +65,9 @@ docs/
 
 - **M0:** ✅ boot x86_64 under QEMU; serial output; panic path
 - **M1:** ✅ GDT/TSS/IDT, exception handling, hardened bootstrap frame allocation, page map/unmap, NX and W^X on FreeWorld-created mappings
-- **M2:** ◐ PIC/APIC bring-up and measured timer in progress; scheduler/tick delivery next
+- **M2:** ✅ PIC/APIC bring-up, uncached LAPIC mapping, PIT calibration, first `sti`, periodic tick delivery, and generic `rt::time` hook
 - **M3:** heap + FW object/handle core + capability skeleton
+- **M3.5:** task stacks + saved context + deterministic scheduler/context switching built on M3 primitives
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
@@ -74,4 +75,4 @@ docs/
 - **M8:** FW_MODULE loader and Bridge ABI v1
 - **M9:** RegCube transactional state core and WinFacet registry projection
 
-See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline, `docs/milestones/M1.md` for the frozen M1 proof, and `docs/milestones/M2.md` for current interrupt/timer status.
+See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline, `docs/milestones/M1.md` for the frozen M1 proof, and `docs/milestones/M2.md` for the M2 interrupt/time proof.
