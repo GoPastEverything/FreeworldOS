@@ -39,3 +39,44 @@ pub fn calibrate_timer() -> Result<apic::TimerCalibration, InterruptControllerEr
 
     apic::calibrate_timer_against_pit().map_err(InterruptControllerError::Apic)
 }
+
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimerDeliveryProof {
+    pub target_hz: u64,
+    pub initial_count: u32,
+    pub ticks_observed: u64,
+}
+
+pub fn enable_timer_delivery_and_prove(
+) -> Result<TimerDeliveryProof, InterruptControllerError> {
+    const TARGET_HZ: u64 = 100;
+    const REQUIRED_TICKS: u64 = 3;
+
+    if interrupts::are_enabled() {
+        return Err(InterruptControllerError::InterruptsAlreadyEnabled);
+    }
+
+    let initial_count =
+        apic::program_periodic_timer(TARGET_HZ).map_err(InterruptControllerError::Apic)?;
+
+    // This is the first intentional STI in FreeWorldOS. All legacy PIC lines
+    // remain masked; the LAPIC timer vector and handler are installed; the
+    // timer handler performs only an atomic increment plus EOI.
+    interrupts::enable();
+
+    while apic::timer_ticks() < REQUIRED_TICKS {
+        x86_64::instructions::hlt();
+    }
+
+    let ticks_observed = apic::timer_ticks();
+    serial::write_fmt(format_args!(
+        "  irq: APIC timer delivery proven target_hz={TARGET_HZ} initial_count={initial_count} ticks={ticks_observed} IF=on\n"
+    ));
+
+    Ok(TimerDeliveryProof {
+        target_hz: TARGET_HZ,
+        initial_count,
+        ticks_observed,
+    })
+}

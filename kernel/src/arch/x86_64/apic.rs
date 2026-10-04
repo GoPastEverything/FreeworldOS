@@ -33,12 +33,14 @@ const REG_TIMER_DIVIDE_CONFIG: u64 = 0x3E0;
 
 const SPURIOUS_SOFTWARE_ENABLE: u32 = 1 << 8;
 const LVT_MASKED: u32 = 1 << 16;
+const LVT_TIMER_PERIODIC: u32 = 1 << 17;
 const TIMER_DIVIDE_BY_16: u32 = 0x3;
 const LVT_DELIVERY_NMI: u32 = 0b100 << 8;
 const LAPIC_VIRTUAL_BASE: u64 = 0xffff_8000_0000_0000;
 
 static APIC_BASE_VIRTUAL: AtomicU64 = AtomicU64::new(0);
 static APIC_TIMER_HZ: AtomicU64 = AtomicU64::new(0);
+static APIC_TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApicError {
@@ -51,6 +53,9 @@ pub enum ApicError {
     TimerProducedZeroSample,
     TimerRateOverflow,
     ImplausibleTimerRate { hz: u64 },
+    TimerNotCalibrated,
+    InvalidPeriodicRate { hz: u64 },
+    TimerInitialCountOverflow { count: u64 },
 }
 
 
@@ -231,6 +236,47 @@ pub fn calibrate_timer_against_pit() -> Result<TimerCalibration, ApicError> {
 pub fn timer_counter_hz() -> Option<u64> {
     let hz = APIC_TIMER_HZ.load(Ordering::Acquire);
     (hz != 0).then_some(hz)
+}
+
+
+pub fn program_periodic_timer(target_hz: u64) -> Result<u32, ApicError> {
+    if target_hz == 0 {
+        return Err(ApicError::InvalidPeriodicRate { hz: target_hz });
+    }
+
+    let counter_hz = timer_counter_hz().ok_or(ApicError::TimerNotCalibrated)?;
+    let count = counter_hz / target_hz;
+    if count == 0 {
+        return Err(ApicError::InvalidPeriodicRate { hz: target_hz });
+    }
+
+    let initial_count = u32::try_from(count)
+        .map_err(|_| ApicError::TimerInitialCountOverflow { count })?;
+
+    APIC_TIMER_TICKS.store(0, Ordering::Release);
+
+    // SAFETY: Calibration has completed with IF clear. The handler and IDT
+    // vector are already installed. This programs only the local APIC timer;
+    // interrupt delivery cannot begin until the later explicit STI.
+    unsafe {
+        write(REG_TIMER_DIVIDE_CONFIG, TIMER_DIVIDE_BY_16);
+        write(
+            REG_LVT_TIMER,
+            u32::from(TIMER_VECTOR) | LVT_TIMER_PERIODIC,
+        );
+        write(REG_TIMER_INITIAL_COUNT, initial_count);
+    }
+
+    Ok(initial_count)
+}
+
+pub fn timer_interrupt() {
+    APIC_TIMER_TICKS.fetch_add(1, Ordering::AcqRel);
+    eoi();
+}
+
+pub fn timer_ticks() -> u64 {
+    APIC_TIMER_TICKS.load(Ordering::Acquire)
 }
 
 pub fn eoi() {

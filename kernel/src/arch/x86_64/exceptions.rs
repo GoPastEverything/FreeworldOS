@@ -195,10 +195,9 @@ extern "x86-interrupt" fn pic_spurious_interrupt(_stack_frame: InterruptStackFra
 }
 
 extern "x86-interrupt" fn apic_timer_interrupt(_stack_frame: InterruptStackFrame) {
-    // The timer is masked until calibration and the later STI/tick-count commit.
-    // This EOI keeps the handler correct if a pending timer interrupt is ever
-    // delivered after the LVT is unmasked.
-    apic::eoi();
+    // Interrupt-context invariant: no allocation, locks, serial formatting,
+    // page mapping, or scheduler work. M2 proves only atomic tick delivery.
+    apic::timer_interrupt();
 }
 
 extern "x86-interrupt" fn apic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
