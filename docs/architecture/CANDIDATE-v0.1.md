@@ -234,11 +234,15 @@ private kernel-entry protocol
 kernel
 ~~~
 
-Only the callgate issues the architecture syscall instruction. fw-sys is an unsafe wrapper around stable callgate symbols; it does not contain raw native syscall numbers or the syscall instruction.
+Only the callgate issues the architecture syscall instruction. fw-sys dispatches through a versioned function-pointer table discovered from the initial native process stack; it does not contain raw native syscall numbers or the syscall instruction.
 
-The public callgate ABI is versioned/stable. The private callgate-to-kernel protocol may change without recompiling all native applications.
+For M5, the kernel places a versioned startup record after argc/argv/envp. That record identifies the callgate mapping and points to the append-only v1 call table. This supports statically linked native binaries without requiring a dynamic linker or reserving a dedicated general-purpose register.
 
-See NATIVE-ABI-v0.1.md for the locked native-userspace decisions.
+FreeWorld-native ELF files are marked by a precise PT_NOTE contract and rejected before process creation when they request an unsupported native ABI version. Native errors use fw_status_t (i32): zero success, negative error, positive reserved. libfw maps statuses to Rust results; fwlibc owns any C errno TLS mapping.
+
+The public native ABI is versioned/stable. The private callgate-to-kernel protocol may change without recompiling all native applications.
+
+See NATIVE-ABI-v0.1.md for the exact note, startup, call-table, syscall and error contracts.
 
 ---
 
@@ -545,7 +549,7 @@ Current sequence:
 - M2: timer/APIC bring-up and measurable deterministic scheduler foundation
 - M3: heap, FW object/handle core, capability skeleton
 - M4: VFS mount/object graph, binary-safe names, RAM filesystem, namespace projections
-- M5: native ELF loader, ring 3, kernel-mapped callgate, fw-abi/fw-sys/libfw minimum, and a no_std FreeWorld userspace hello
+- M5: native ELF PT_NOTE validation, ring 3, versioned initial-stack startup record, kernel-mapped callgate and call table, fw-abi/fw-sys/libfw minimum, status-code ABI, and a no_std FreeWorld userspace hello
 - M6: ELF decoder and initial LinuxFacet syscall interception
 - M7: PE decoder and initial WinFacet DLL/API surface
 - M8: FW_MODULE loader and Bridge ABI v1
