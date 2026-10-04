@@ -6,7 +6,7 @@ FreeWorldOS is an independent bare-metal Rust operating system aimed at a determ
 
 ## Status
 
-**M0 — bootstrap skeleton.** The repository currently contains an x86_64 `no_std`/`no_main` kernel entry point, serial bring-up, the initial execution-profile types, RTOS scheduler scaffolding, the FreeWorld object/VFS/state module boundaries, and BIOS/UEFI image generation through the rust-osdev bootloader crate.
+**M1 — CPU exception and memory foundation.** FreeWorldOS now boots with its own x86_64 GDT/TSS/IDT, logs defined CPU exceptions, discovers firmware-reported usable memory, owns the active page-table mutation path, allocates physical frames, maps/unmaps 4 KiB pages, enables NX, and rejects W+X for FreeWorld-created mappings. GitHub CI boots both the default and self-test BIOS kernels under QEMU and proves the memory/exception paths.
 
 Nothing here claims PE/ELF/WinFacet/LinuxFacet compatibility yet. Those are staged milestones and will be implemented only against clean-room, behavior-driven specifications.
 
@@ -49,6 +49,7 @@ The first successful boot should print a short initialization trace to COM1/QEMU
 kernel/src/
   arch/       CPU and platform bring-up
   exec/       execution profiles and later image/facet dispatch
+  memory/     architecture-neutral physical/virtual memory interface
   object/     native FW process/module/handle model
   rt/         deterministic scheduler/task/time core
   state/      RegCube
@@ -57,12 +58,13 @@ kernel/src/
 docs/
   architecture/
   cleanroom/
+  milestones/
 ```
 
 ## Near-term milestones
 
-- **M0:** boot x86_64 under QEMU; serial output; panic path
-- **M1:** GDT/IDT, exception handling, physical/virtual memory discovery
+- **M0:** ✅ boot x86_64 under QEMU; serial output; panic path
+- **M1:** ✅ GDT/TSS/IDT, exception handling, hardened bootstrap frame allocation, page map/unmap, NX and W^X on FreeWorld-created mappings
 - **M2:** timer/APIC bring-up and deterministic scheduler
 - **M3:** heap + FW object/handle core + capability skeleton
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
@@ -72,4 +74,4 @@ docs/
 - **M8:** FW_MODULE loader and Bridge ABI v1
 - **M9:** RegCube transactional state core and WinFacet registry projection
 
-See `docs/architecture/CANDIDATE-v0.1.md` for the current reconstruction baseline.
+See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline and `docs/milestones/M1.md` for the M1 implementation/CI proof.
