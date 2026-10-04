@@ -1,5 +1,3 @@
-use bootloader_api::BootInfo;
-
 pub const PAGE_SIZE: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,10 +99,6 @@ pub enum MemoryError {
     NoSelfTestVirtualAddress,
     SelfTestDataMismatch,
     SelfTestFrameMismatch,
-}
-
-pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
-    crate::arch::memory::init(boot_info)
 }
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
