@@ -6,7 +6,7 @@ FreeWorldOS is an independent bare-metal Rust operating system aimed at a determ
 
 ## Status
 
-**M1 — CPU exception and memory foundation.** FreeWorldOS now boots with its own x86_64 GDT/TSS/IDT, logs defined CPU exceptions, discovers firmware-reported usable memory, owns the active page-table mutation path, allocates physical frames, maps/unmaps 4 KiB pages, enables NX, and enforces W^X in the FreeWorld memory API. GitHub CI proves the memory and exception paths under QEMU.
+**M1 — CPU exception and memory foundation.** FreeWorldOS now boots with its own x86_64 GDT/TSS/IDT, logs defined CPU exceptions, discovers firmware-reported usable memory, owns the active page-table mutation path, allocates physical frames, maps/unmaps 4 KiB pages, enables NX, and rejects W+X for FreeWorld-created mappings. GitHub CI boots both the default and self-test BIOS kernels under QEMU and proves the memory/exception paths.
 
 Nothing here claims PE/ELF/WinFacet/LinuxFacet compatibility yet. Those are staged milestones and will be implemented only against clean-room, behavior-driven specifications.
 
@@ -49,6 +49,7 @@ The first successful boot should print a short initialization trace to COM1/QEMU
 kernel/src/
   arch/       CPU and platform bring-up
   exec/       execution profiles and later image/facet dispatch
+  memory/     architecture-neutral physical/virtual memory interface
   object/     native FW process/module/handle model
   rt/         deterministic scheduler/task/time core
   state/      RegCube
@@ -57,12 +58,13 @@ kernel/src/
 docs/
   architecture/
   cleanroom/
+  milestones/
 ```
 
 ## Near-term milestones
 
 - **M0:** ✅ boot x86_64 under QEMU; serial output; panic path
-- **M1:** ✅ GDT/TSS/IDT, exception handling, physical memory discovery, frame allocation, page map/unmap, NX/W^X
+- **M1:** ✅ GDT/TSS/IDT, exception handling, hardened bootstrap frame allocation, page map/unmap, NX and W^X on FreeWorld-created mappings
 - **M2:** timer/APIC bring-up and deterministic scheduler
 - **M3:** heap + FW object/handle core + capability skeleton
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
