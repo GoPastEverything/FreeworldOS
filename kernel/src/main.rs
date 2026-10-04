@@ -48,6 +48,22 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         arch::serial::println("FreeWorldOS: M3 heap self-test: passed");
     }
 
+    #[cfg(feature = "m35a-ci-self-test")]
+    {
+        if let Err(error) = memory::frame_reuse_ci_self_test() {
+            panic!("M3.5-A frame reuse self-test failed: {error:?}");
+        }
+
+        let stats = memory::frame_reuse_stats()
+            .expect("M3.5-A frame reuse stats unavailable after self-test");
+        arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M3.5-A frame reuse self-test: passed available={} returned_total={} reused_total={}\n",
+            stats.available,
+            stats.returned_total,
+            stats.reused_total,
+        ));
+    }
+
     if let Err(error) = arch::interrupt_controller::init() {
         panic!("M2 interrupt-controller initialization failed: {error:?}");
     }

@@ -8,6 +8,13 @@ pub struct PhysFrame {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameReuseStats {
+    pub available: usize,
+    pub returned_total: u64,
+    pub reused_total: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryCachePolicy {
     Normal,
     Device,
@@ -135,6 +142,7 @@ pub enum MemoryError {
     InvalidVirtualAddress,
     AddressNotAligned,
     InvalidPhysicalFrame,
+    FrameNotAllocatorOwned,
     OutOfFrames,
     PageAlreadyMapped,
     PageNotMapped,
@@ -152,6 +160,25 @@ pub enum MemoryError {
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
     crate::arch::memory::allocate_frame()
+}
+
+/// Returns a physical frame to FreeWorld's recycler.
+///
+/// # Safety
+///
+/// The caller must own the frame exclusively and must prove that no
+/// owner-visible virtual mapping, raw pointer, DMA mapping, device, or other
+/// consumer can still use it. The allocator's own privileged physical-memory
+/// mapping is excluded from that condition because the recycler uses it as
+/// metadata access. After this call succeeds, the frame's contents are
+/// destroyed and the caller must never access it again unless it is later
+/// returned by `allocate_frame()`.
+pub unsafe fn free_frame(frame: PhysFrame) -> Result<(), MemoryError> {
+    unsafe { crate::arch::memory::free_frame(frame) }
+}
+
+pub fn frame_reuse_stats() -> Result<FrameReuseStats, MemoryError> {
+    crate::arch::memory::frame_reuse_stats()
 }
 
 /// Maps a single 4 KiB page.
@@ -174,8 +201,9 @@ pub unsafe fn map_page(
 
 /// Removes a single 4 KiB mapping and returns the physical frame that was mapped.
 ///
-/// M1 has no frame deallocator. The returned frame is still owned by the caller
-/// and must not be treated as automatically reusable or returned to a free pool.
+/// Unmapping does not automatically recycle the frame. The returned frame remains
+/// owned by the caller. M3.5-A callers that can prove all other aliases are gone
+/// may transfer that ownership to `free_frame()`.
 pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
     crate::arch::memory::unmap_page(virtual_address)
 }
@@ -229,6 +257,102 @@ pub fn ci_self_test() -> Result<(), MemoryError> {
     if unmapped != frame {
         return Err(MemoryError::SelfTestFrameMismatch);
     }
+
+    Ok(())
+}
+
+
+#[cfg(feature = "m35a-ci-self-test")]
+pub fn frame_reuse_ci_self_test() -> Result<(), MemoryError> {
+    const TEST_VIRTUAL_ADDRESSES: [u64; 4] = [
+        0x0000_2000_0000_0000,
+        0x0000_2100_0000_0000,
+        0x0000_2200_0000_0000,
+        0x0000_2300_0000_0000,
+    ];
+    const FIRST_PATTERN: u64 = 0x4657_4f53_4652_4545;
+    const SECOND_PATTERN: u64 = 0x4657_4f53_5245_5553;
+
+    let before = frame_reuse_stats()?;
+
+    if unsafe { free_frame(PhysFrame { start: 0 }) }
+        != Err(MemoryError::FrameNotAllocatorOwned)
+    {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    let frame = allocate_frame()?;
+    let permissions = PagePermissions::read_write();
+
+    let mut mapped_address = None;
+    for address in TEST_VIRTUAL_ADDRESSES {
+        match unsafe { map_page(address, frame, permissions) } {
+            Ok(()) => {
+                mapped_address = Some(address);
+                break;
+            }
+            Err(MemoryError::PageAlreadyMapped) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    let address = mapped_address.ok_or(MemoryError::NoSelfTestVirtualAddress)?;
+
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, FIRST_PATTERN);
+    }
+
+    let unmapped = unmap_page(address)?;
+    if unmapped != frame {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    // SAFETY: The only test mapping was removed above, the self-test owns the
+    // frame exclusively, and no device/DMA consumer was ever given the frame.
+    unsafe { free_frame(unmapped)? };
+
+    let after_free = frame_reuse_stats()?;
+    if after_free.available != before.available + 1
+        || after_free.returned_total != before.returned_total + 1
+        || after_free.reused_total != before.reused_total
+    {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    let reused = allocate_frame()?;
+    if reused != frame {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    let after_reuse = frame_reuse_stats()?;
+    if after_reuse.available != before.available
+        || after_reuse.returned_total != before.returned_total + 1
+        || after_reuse.reused_total != before.reused_total + 1
+    {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    unsafe { map_page(address, reused, permissions)? };
+
+    // Recycled frames are scrubbed before reuse. The intrusive free-stack link
+    // and stale data from the previous owner must both be gone.
+    let scrubbed = unsafe { core::ptr::read_volatile(address as *const u64) };
+    if scrubbed != 0 {
+        return Err(MemoryError::SelfTestDataMismatch);
+    }
+
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, SECOND_PATTERN);
+    }
+
+    let returned_again = unmap_page(address)?;
+    if returned_again != reused {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
+    // Leave the successfully-tested frame in the recycler so later bootstrap
+    // allocations can consume it instead of leaking the self-test frame.
+    unsafe { free_frame(returned_again)? };
 
     Ok(())
 }
