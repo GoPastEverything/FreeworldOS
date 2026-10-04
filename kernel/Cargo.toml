@@ -1,0 +1,8 @@
+[package]
+name = "freeworld-kernel"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bootloader_api = "=0.11.17"

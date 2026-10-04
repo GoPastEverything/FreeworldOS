@@ -1,0 +1,7 @@
+/target/
+*.img
+*.bin
+*.elf
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-15
+          components: llvm-tools-preview,rust-src
+          targets: x86_64-unknown-none,x86_64-unknown-uefi
+      - name: Build boot images
+        run: cargo build
