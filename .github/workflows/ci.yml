@@ -16,37 +16,84 @@ jobs:
           components: llvm-tools-preview,rust-src
           targets: x86_64-unknown-none,x86_64-unknown-uefi
 
-      - name: Build M1 boot images with self-tests
-        run: cargo build --features m1-ci-self-test
+      - name: Build default M1 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build
+          mkdir -p target/ci
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-default-bios.img
+
+      - name: Build M1 image with self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m1-ci-self-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-selftest-bios.img
 
       - name: Install QEMU
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
 
+      - name: Boot default M1 BIOS image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s             qemu-system-x86_64               -drive "format=raw,file=target/ci/freeworldos-default-bios.img"               -serial stdio               -display none               -no-reboot               -no-shutdown               -m 256M             > default-boot-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat default-boot-serial.log
+
+          grep -Fq "FreeWorldOS: M1 foundation online" default-boot-serial.log
+          grep -Fq "FreeWorldOS: bootstrap initialization complete" default-boot-serial.log
+
+          if grep -Fq "KERNEL PANIC" default-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" default-boot-serial.log             || grep -Fq "FreeWorldOS: EXCEPTION:" default-boot-serial.log; then
+            echo "unexpected panic or exception during default M1 boot" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
       - name: Boot M1 BIOS image and verify memory + exception paths
         shell: bash
         run: |
           set -euo pipefail
 
-          BIOS_IMAGE="$(find target -type f -name 'freeworldos-bios.img' -print -quit)"
-          test -n "$BIOS_IMAGE"
-
           set +e
-          timeout --signal=TERM --kill-after=2s 8s             qemu-system-x86_64               -drive "format=raw,file=$BIOS_IMAGE"               -serial stdio               -display none               -no-reboot               -no-shutdown               -m 256M             > boot-serial.log 2>&1
+          timeout --signal=TERM --kill-after=2s 8s             qemu-system-x86_64               -drive "format=raw,file=target/ci/freeworldos-selftest-bios.img"               -serial stdio               -display none               -no-reboot               -no-shutdown               -m 256M             > selftest-boot-serial.log 2>&1
           QEMU_STATUS=$?
           set -e
 
-          cat boot-serial.log
+          cat selftest-boot-serial.log
 
-          grep -Fq "FreeWorldOS: M1 memory self-test: passed" boot-serial.log
-          grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" boot-serial.log
-          grep -Fq "FreeWorldOS: M1 exception self-test: resumed" boot-serial.log
-          grep -Fq "FreeWorldOS: M1 foundation online" boot-serial.log
-          grep -Fq "FreeWorldOS: bootstrap initialization complete" boot-serial.log
+          grep -Fq "FreeWorldOS: M1 memory self-test: passed" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M1 foundation online" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: bootstrap initialization complete" selftest-boot-serial.log
 
-          if grep -Fq "KERNEL PANIC" boot-serial.log; then
-            echo "kernel panic detected during M1 boot" >&2
+          if grep -Fq "KERNEL PANIC" selftest-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" selftest-boot-serial.log; then
+            echo "panic or fatal exception detected during M1 self-test boot" >&2
+            exit 1
+          fi
+
+          if grep -F "FreeWorldOS: EXCEPTION:" selftest-boot-serial.log             | grep -Fv "FreeWorldOS: EXCEPTION: #BP breakpoint"; then
+            echo "unexpected exception detected during M1 self-test boot" >&2
             exit 1
           fi
 

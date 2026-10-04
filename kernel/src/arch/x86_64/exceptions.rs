@@ -60,6 +60,10 @@ pub fn trigger_test_breakpoint() {
     x86_64::instructions::interrupts::int3();
 }
 
+fn fatal_marker() {
+    serial::println("FreeWorldOS: FATAL");
+}
+
 fn log_frame(label: &str, stack_frame: InterruptStackFrame) {
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: {label}\n{stack_frame:#?}\n"
@@ -67,11 +71,13 @@ fn log_frame(label: &str, stack_frame: InterruptStackFrame) {
 }
 
 fn fatal_no_error(label: &str, stack_frame: InterruptStackFrame) -> ! {
+    fatal_marker();
     log_frame(label, stack_frame);
     halt_loop()
 }
 
 fn fatal_with_error(label: &str, stack_frame: InterruptStackFrame, error_code: u64) -> ! {
+    fatal_marker();
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: {label} error={error_code:#x}\n{stack_frame:#?}\n"
     ));
@@ -131,6 +137,7 @@ extern "x86-interrupt" fn double_fault(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
+    fatal_marker();
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: #DF double fault error={error_code:#x}\n{stack_frame:#?}\n"
     ));
@@ -138,6 +145,7 @@ extern "x86-interrupt" fn double_fault(
 }
 
 extern "x86-interrupt" fn machine_check(stack_frame: InterruptStackFrame) -> ! {
+    fatal_marker();
     serial::write_fmt(format_args!(
         "FreeWorldOS: EXCEPTION: #MC machine check\n{stack_frame:#?}\n"
     ));
@@ -148,6 +156,7 @@ extern "x86-interrupt" fn page_fault(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    fatal_marker();
     match Cr2::read() {
         Ok(address) => serial::write_fmt(format_args!(
             "FreeWorldOS: EXCEPTION: #PF page fault address={address:?} error={error_code:?}\n{stack_frame:#?}\n"

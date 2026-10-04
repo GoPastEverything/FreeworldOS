@@ -11,7 +11,6 @@ publish = false
 [features]
 default = []
 m1-ci-self-test = ["kernel/m1-ci-self-test"]
-m1-ci-exception-test = ["m1-ci-self-test"]
 
 [dependencies]
 ovmf-prebuilt = "=0.2.9"

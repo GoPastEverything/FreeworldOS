@@ -123,6 +123,10 @@ pub unsafe fn map_page(
     unsafe { crate::arch::memory::map_page(virtual_address, frame, permissions) }
 }
 
+/// Removes a single 4 KiB mapping and returns the physical frame that was mapped.
+///
+/// M1 has no frame deallocator. The returned frame is still owned by the caller
+/// and must not be treated as automatically reusable or returned to a free pool.
 pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
     crate::arch::memory::unmap_page(virtual_address)
 }

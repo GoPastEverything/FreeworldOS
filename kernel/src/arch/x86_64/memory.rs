@@ -27,6 +27,8 @@ use crate::memory::{
     MemoryError, PagePermissions, PhysFrame, PAGE_SIZE,
 };
 
+const MIN_ALLOCATABLE_PHYS: u64 = 0x10_0000;
+
 struct ManagerStorage(UnsafeCell<MaybeUninit<X86MemoryManager>>);
 
 // SAFETY: Access to the storage is serialized by MANAGER_LOCK, and M1 keeps
@@ -58,18 +60,42 @@ impl Drop for ManagerGuard {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ReservedRange {
+    start: u64,
+    end: u64,
+}
+
+impl ReservedRange {
+    const fn new(start: u64, end: u64) -> Self {
+        Self { start, end }
+    }
+
+    const fn overlaps(self, start: u64, end: u64) -> bool {
+        start < self.end && end > self.start
+    }
+}
+
 struct BootFrameAllocator {
     regions: &'static [MemoryRegion],
     region_index: usize,
     next_address: u64,
+    kernel: ReservedRange,
+    ramdisk: Option<ReservedRange>,
 }
 
 impl BootFrameAllocator {
-    fn new(regions: &'static [MemoryRegion]) -> Self {
+    fn new(
+        regions: &'static [MemoryRegion],
+        kernel: ReservedRange,
+        ramdisk: Option<ReservedRange>,
+    ) -> Self {
         Self {
             regions,
             region_index: 0,
-            next_address: 0,
+            next_address: MIN_ALLOCATABLE_PHYS,
+            kernel,
+            ramdisk,
         }
     }
 
@@ -78,12 +104,12 @@ impl BootFrameAllocator {
             let region = self.regions.get(self.region_index)?;
 
             if region.kind != MemoryRegionKind::Usable {
-                self.region_index += 1;
-                self.next_address = 0;
+                self.advance_region();
                 continue;
             }
 
-            let start = align_up(region.start, PAGE_SIZE);
+            let region_start = region.start.max(MIN_ALLOCATABLE_PHYS);
+            let start = align_up(region_start, PAGE_SIZE);
             if self.next_address < start {
                 self.next_address = start;
             }
@@ -91,19 +117,39 @@ impl BootFrameAllocator {
             let frame_start = self.next_address;
             let frame_end = frame_start.checked_add(PAGE_SIZE)?;
 
-            if frame_end <= region.end {
-                self.next_address = frame_end;
-                return X86PhysFrame::from_start_address(PhysAddr::new(frame_start)).ok();
+            if frame_end > region.end {
+                self.advance_region();
+                continue;
             }
 
-            self.region_index += 1;
-            self.next_address = 0;
+            if let Some(reserved) = self.reserved_overlap(frame_start, frame_end) {
+                self.next_address = align_up(reserved.end, PAGE_SIZE);
+                continue;
+            }
+
+            self.next_address = frame_end;
+            return X86PhysFrame::from_start_address(PhysAddr::new(frame_start)).ok();
         }
+    }
+
+    fn advance_region(&mut self) {
+        self.region_index += 1;
+        self.next_address = MIN_ALLOCATABLE_PHYS;
+    }
+
+    fn reserved_overlap(&self, start: u64, end: u64) -> Option<ReservedRange> {
+        if self.kernel.overlaps(start, end) {
+            return Some(self.kernel);
+        }
+
+        self.ramdisk
+            .filter(|reserved| reserved.overlaps(start, end))
     }
 }
 
-// SAFETY: next_frame walks only regions marked Usable by bootloader_api and
-// advances monotonically, so it never returns the same frame twice.
+// SAFETY: next_frame walks only regions marked Usable by bootloader_api,
+// excludes low memory and explicit kernel/ramdisk reservations, and advances
+// monotonically, so it never returns the same frame twice.
 unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
     fn allocate_frame(&mut self) -> Option<X86PhysFrame<Size4KiB>> {
         self.next_frame()
@@ -143,8 +189,23 @@ pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
             OffsetPageTable::new(level_4_table, VirtAddr::new(physical_memory_offset))
         };
 
+        let kernel = ReservedRange::new(
+            boot_info.kernel_addr,
+            boot_info.kernel_addr.saturating_add(boot_info.kernel_len),
+        );
+        let ramdisk = boot_info
+            .ramdisk_addr
+            .into_option()
+            .filter(|_| boot_info.ramdisk_len != 0)
+            .map(|start| {
+                ReservedRange::new(
+                    start,
+                    start.saturating_add(boot_info.ramdisk_len),
+                )
+            });
+
         let regions: &'static [MemoryRegion] = &boot_info.memory_regions;
-        let allocator = BootFrameAllocator::new(regions);
+        let allocator = BootFrameAllocator::new(regions, kernel, ramdisk);
 
         let manager = X86MemoryManager { mapper, allocator };
 
@@ -160,6 +221,9 @@ pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
             "  memory: active CR3={:#x} page_size={} bytes NX=on\n",
             level_4_frame.start_address().as_u64(),
             PAGE_SIZE
+        ));
+        serial_memory_line(format_args!(
+            "  memory: allocator floor={MIN_ALLOCATABLE_PHYS:#x} kernel/ramdisk excluded\n"
         ));
 
         Ok(())
@@ -290,6 +354,15 @@ fn log_boot_memory(boot_info: &BootInfo, physical_memory_offset: u64) {
         boot_info.kernel_addr.saturating_add(boot_info.kernel_len),
         boot_info.kernel_image_offset
     ));
+    if let Some(ramdisk_start) = boot_info.ramdisk_addr.into_option() {
+        if boot_info.ramdisk_len != 0 {
+            serial_memory_line(format_args!(
+                "  memory: ramdisk phys=[{:#x}..{:#x})\n",
+                ramdisk_start,
+                ramdisk_start.saturating_add(boot_info.ramdisk_len)
+            ));
+        }
+    }
     serial_memory_line(format_args!(
         "  memory: physical map offset={physical_memory_offset:#x}\n"
     ));
