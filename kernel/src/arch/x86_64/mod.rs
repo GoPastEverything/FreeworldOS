@@ -1,5 +1,9 @@
+mod apic;
 mod gdt;
+mod pic;
+mod pit;
 pub mod exceptions;
+pub mod interrupt_controller;
 pub mod memory;
 pub mod serial;
 
@@ -12,6 +16,18 @@ pub fn early_init(_boot_info: &mut BootInfo) {
     gdt::init();
     exceptions::init();
     serial::println("  arch: FreeWorld GDT/TSS/IDT online");
+}
+
+pub fn timer_ticks() -> u64 {
+    apic::timer_ticks()
+}
+
+pub fn timer_period_ns() -> Option<u64> {
+    apic::timer_period_ns()
+}
+
+pub fn disable_interrupts() {
+    interrupts::disable();
 }
 
 pub fn halt_loop() -> ! {

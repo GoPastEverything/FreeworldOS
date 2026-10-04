@@ -6,7 +6,13 @@ use x86_64::{
     },
 };
 
-use super::{gdt::DOUBLE_FAULT_IST_INDEX, halt_loop, serial};
+use super::{
+    apic, pic,
+    gdt::{
+        DOUBLE_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
+    },
+    halt_loop, serial,
+};
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -14,19 +20,24 @@ lazy_static! {
 
         idt.divide_error.set_handler_fn(divide_error);
         idt.debug.set_handler_fn(debug);
-        idt.non_maskable_interrupt.set_handler_fn(non_maskable_interrupt);
         idt.breakpoint.set_handler_fn(breakpoint);
         idt.overflow.set_handler_fn(overflow);
         idt.bound_range_exceeded.set_handler_fn(bound_range_exceeded);
         idt.invalid_opcode.set_handler_fn(invalid_opcode);
         idt.device_not_available.set_handler_fn(device_not_available);
 
-        // SAFETY: IST index 0 is initialized in the FreeWorld TSS and points at
-        // a dedicated, statically allocated double-fault stack.
+        // SAFETY: The first three IST entries are initialized in the
+        // FreeWorld TSS and point at dedicated static exception stacks.
         unsafe {
+            idt.non_maskable_interrupt
+                .set_handler_fn(non_maskable_interrupt)
+                .set_stack_index(NMI_IST_INDEX);
             idt.double_fault
                 .set_handler_fn(double_fault)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
+            idt.machine_check
+                .set_handler_fn(machine_check)
+                .set_stack_index(MACHINE_CHECK_IST_INDEX);
         }
 
         idt.invalid_tss.set_handler_fn(invalid_tss);
@@ -37,7 +48,6 @@ lazy_static! {
         idt.page_fault.set_handler_fn(page_fault);
         idt.x87_floating_point.set_handler_fn(x87_floating_point);
         idt.alignment_check.set_handler_fn(alignment_check);
-        idt.machine_check.set_handler_fn(machine_check);
         idt.simd_floating_point.set_handler_fn(simd_floating_point);
         idt.virtualization.set_handler_fn(virtualization);
         idt.cp_protection_exception
@@ -47,6 +57,13 @@ lazy_static! {
         idt.vmm_communication_exception
             .set_handler_fn(vmm_communication_exception);
         idt.security_exception.set_handler_fn(security_exception);
+
+        for vector in pic::MASTER_VECTOR_OFFSET..=(pic::SLAVE_VECTOR_OFFSET + 7) {
+            idt[vector].set_handler_fn(pic_spurious_interrupt);
+        }
+
+        idt[apic::TIMER_VECTOR].set_handler_fn(apic_timer_interrupt);
+        idt[apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_interrupt);
 
         idt
     };
@@ -128,9 +145,13 @@ extern "x86-interrupt" fn breakpoint(stack_frame: InterruptStackFrame) {
     serial::write_fmt(format_args!("{stack_frame:#?}\n"));
 }
 
-extern "x86-interrupt" fn non_maskable_interrupt(stack_frame: InterruptStackFrame) {
+/// NMI invariant: this handler must remain tiny and non-faulting.
+///
+/// Do not allocate, acquire locks, map pages, format complex data, or call code
+/// that can fault. A fault that returns can unblock NMIs before this handler has
+/// returned, allowing a nested NMI to reuse and overwrite the same IST stack.
+extern "x86-interrupt" fn non_maskable_interrupt(_stack_frame: InterruptStackFrame) {
     serial::println("FreeWorldOS: EXCEPTION: NMI");
-    serial::write_fmt(format_args!("{stack_frame:#?}\n"));
 }
 
 extern "x86-interrupt" fn double_fault(
@@ -167,4 +188,18 @@ extern "x86-interrupt" fn page_fault(
     }
 
     halt_loop()
+}
+
+extern "x86-interrupt" fn pic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
+    serial::println("FreeWorldOS: IRQ: masked legacy PIC vector");
+}
+
+extern "x86-interrupt" fn apic_timer_interrupt(_stack_frame: InterruptStackFrame) {
+    // Interrupt-context invariant: no allocation, locks, serial formatting,
+    // page mapping, or scheduler work. M2 proves only atomic tick delivery.
+    apic::timer_interrupt();
+}
+
+extern "x86-interrupt" fn apic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
+    // xAPIC spurious interrupts do not require EOI.
 }
