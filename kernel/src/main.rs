@@ -72,7 +72,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M2 APIC timer delivery proof failed: {error:?}");
     }
 
-    object::init();
+    if let Err(error) = object::init() {
+        panic!("M3 object initialization failed: {error:?}");
+    }
+
+    #[cfg(feature = "m3-ci-self-test")]
+    {
+        if let Err(error) = object::ci_self_test() {
+            panic!("M3 object self-test failed: {error:?}");
+        }
+    }
+
     vfs::init();
     state::init();
     exec::init();
