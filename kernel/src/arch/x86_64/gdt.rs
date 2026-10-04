@@ -13,12 +13,17 @@ use x86_64::{
 };
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
-const DOUBLE_FAULT_STACK_SIZE: usize = 5 * 4096;
+pub const NMI_IST_INDEX: u16 = 1;
+pub const MACHINE_CHECK_IST_INDEX: u16 = 2;
+
+const EXCEPTION_STACK_SIZE: usize = 5 * 4096;
 
 #[repr(align(16))]
-struct AlignedStack([u8; DOUBLE_FAULT_STACK_SIZE]);
+struct AlignedStack([u8; EXCEPTION_STACK_SIZE]);
 
-static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; EXCEPTION_STACK_SIZE]);
+static mut NMI_STACK: AlignedStack = AlignedStack([0; EXCEPTION_STACK_SIZE]);
+static mut MACHINE_CHECK_STACK: AlignedStack = AlignedStack([0; EXCEPTION_STACK_SIZE]);
 
 struct Selectors {
     code: SegmentSelector,
@@ -26,15 +31,23 @@ struct Selectors {
     tss: SegmentSelector,
 }
 
+fn stack_top(stack: *const AlignedStack) -> VirtAddr {
+    let start = VirtAddr::from_ptr(stack);
+    start + EXCEPTION_STACK_SIZE as u64
+}
+
 lazy_static! {
     static ref TSS: TaskStateSegment = {
         let mut tss = TaskStateSegment::new();
 
-        // SAFETY: The stack has static storage duration and is reserved exclusively
-        // for the CPU's double-fault IST entry.
-        let stack_start = VirtAddr::from_ptr(ptr::addr_of!(DOUBLE_FAULT_STACK));
-        let stack_end = stack_start + DOUBLE_FAULT_STACK_SIZE as u64;
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
+        // SAFETY: Each stack has static storage duration and is reserved
+        // exclusively for its CPU exception IST entry.
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+            stack_top(ptr::addr_of!(DOUBLE_FAULT_STACK));
+        tss.interrupt_stack_table[NMI_IST_INDEX as usize] =
+            stack_top(ptr::addr_of!(NMI_STACK));
+        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] =
+            stack_top(ptr::addr_of!(MACHINE_CHECK_STACK));
 
         tss
     };
