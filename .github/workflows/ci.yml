@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -85,6 +85,7 @@ jobs:
           cat selftest-boot-serial.log
 
           grep -Fq "FreeWorldOS: M1 memory self-test: passed" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M3 heap self-test: passed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 foundation online" selftest-boot-serial.log
