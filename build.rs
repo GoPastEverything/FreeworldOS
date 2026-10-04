@@ -2,7 +2,7 @@ use std::{env, path::PathBuf};
 
 fn main() {
     let kernel = PathBuf::from(
-        env::var_os("CARGO_BIN_FILE_KERNEL")
+        env::var_os("CARGO_BIN_FILE_KERNEL_kernel")
             .expect("kernel artifact path missing"),
     );
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR missing"));
