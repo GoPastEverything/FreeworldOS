@@ -4,5 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+
 [dependencies]
 bootloader_api = "=0.11.17"
