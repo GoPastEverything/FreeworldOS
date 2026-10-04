@@ -8,5 +8,11 @@ publish = false
 name = "kernel"
 path = "src/main.rs"
 
+[features]
+default = []
+m1-ci-exception-test = []
+
 [dependencies]
 bootloader_api = "=0.11.17"
+lazy_static = { version = "=1.5.0", features = ["spin_no_std"] }
+x86_64 = { version = "=0.15.5", features = ["abi_x86_interrupt"] }

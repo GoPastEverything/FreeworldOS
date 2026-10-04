@@ -1,9 +1,16 @@
+mod gdt;
+pub mod exceptions;
 pub mod serial;
 
 use bootloader_api::BootInfo;
+use x86_64::instructions::interrupts;
 
 pub fn early_init(_boot_info: &'static mut BootInfo) {
+    interrupts::disable();
     serial::init();
+    gdt::init();
+    exceptions::init();
+    serial::println("  arch: FreeWorld GDT/TSS/IDT online");
 }
 
 pub fn halt_loop() -> ! {
