@@ -1,6 +1,6 @@
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{compiler_fence, AtomicU64, Ordering},
 };
 
 use crate::arch;
@@ -64,12 +64,23 @@ struct EventSlot {
     record: UnsafeCell<EventRecord>,
 }
 
-// SAFETY: M3.5-B is bootstrap-CPU-only. Writers obtain unique monotonically
-// increasing sequence numbers. An NMI may interrupt a normal writer, but the
-// two writers target different slots unless the ring wraps through all 256
-// entries during one nested write, which no current handler can do. A slot is
-// published only after its record bytes are complete. SMP must replace this
-// with per-CPU rings or equivalent synchronization before APs emit events.
+// SAFETY: M3.5-B is bootstrap-CPU-only; the only asynchronous writer or
+// reader is an NMI (or the panic dump) on that same CPU. Writers obtain unique
+// monotonically increasing sequence numbers, so a nested NMI writer targets a
+// different slot unless the ring wraps through all 256 entries during one
+// nested write, which no current handler can do.
+//
+// Publication protocol (invalidate-before-overwrite):
+//   writer: published_sequence = 0, compiler fence, write record,
+//           compiler fence, published_sequence = new sequence
+//   reader: check sequence, compiler fence, copy record, compiler fence,
+//           re-check sequence; 0, mismatch or change => slot unavailable
+// published_sequence == 0 means "do not trust this slot". Readers never retry
+// or spin. The atomic sequence plus compiler fences are the synchronization;
+// volatile payload access only keeps the copy from being elided.
+//
+// This is NOT a general SMP sequence lock. Before APs emit events, replace it
+// with per-CPU rings or an equivalent cross-CPU design.
 unsafe impl Sync for EventSlot {}
 
 impl EventSlot {
@@ -109,11 +120,19 @@ pub fn record(
         args,
     };
 
-    // SAFETY: See EventSlot::Sync. Publication uses Release after the entire
-    // fixed record is written.
+    // Invalidate the previous incarnation before touching its payload.
+    slot.published_sequence.store(0, Ordering::Release);
+    compiler_fence(Ordering::SeqCst);
+
+    // SAFETY: See EventSlot::Sync. published_sequence is 0 while this slot is
+    // being replaced, so no reader will accept a partially written record.
+    // Volatile only makes the payload write explicit; it is not the sync.
     unsafe {
-        slot.record.get().write(record);
+        slot.record.get().write_volatile(record);
     }
+
+    // The complete record must be written before publication.
+    compiler_fence(Ordering::SeqCst);
     slot.published_sequence.store(sequence, Ordering::Release);
     sequence
 }
@@ -132,8 +151,14 @@ pub fn read_sequence(sequence: u64) -> Option<EventRecord> {
         return None;
     }
 
-    // SAFETY: Acquire observed the Release publication of this sequence.
+    compiler_fence(Ordering::SeqCst);
+
+    // SAFETY: The slot was published for this sequence. If a writer replaces
+    // it during the copy, the re-check below observes 0 or a new sequence and
+    // the copy is discarded.
     let record = unsafe { slot.record.get().read_volatile() };
+
+    compiler_fence(Ordering::SeqCst);
 
     if slot.published_sequence.load(Ordering::Acquire) != sequence {
         return None;
