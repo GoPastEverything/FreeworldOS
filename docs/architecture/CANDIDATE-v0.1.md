@@ -558,7 +558,8 @@ Before FreeWorld creates ring-3 process page tables, the x86_64 address-space sp
 - the lower canonical half belongs to process/user mappings, except deliberately defined shared user mappings such as the native callgate;
 - kernel-private mappings live in the higher half and remain present consistently across process address spaces;
 - kernel-private mappings include the kernel image, privileged physical-memory/direct map, kernel heap, task stacks, and device mappings;
-- the current bootstrap placement of the kernel image and physical-memory map must therefore be relocated/hardened before M5 user address spaces are considered complete.
+- the current bootstrap placement of the kernel image and physical-memory map must therefore be relocated/hardened before M5 user address spaces are considered complete;
+- once SMAP is enabled, every kernel task switch/trap-return path must ensure the AC flag is cleared unless an explicit, bounded user-access section is active; AC must never leak from one task to another.
 
 M3.5-C task stacks are moved into the higher half before their first saved context is created so no scheduler state depends on a lower-half kernel-stack address.
 - M6: ELF decoder and initial LinuxFacet syscall interception

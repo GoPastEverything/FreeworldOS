@@ -81,6 +81,7 @@ fn scheduler() -> &'static SchedulerState {
 #[cfg(any(
     feature = "m35c2c-ci-switch-test",
     feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
 ))]
 pub fn ci_voluntary_switch_test() -> ! {
     let task_a_ref = object::create_task_ref()
@@ -155,6 +156,7 @@ pub fn ci_voluntary_switch_test() -> ! {
 #[cfg(any(
     feature = "m35c2c-ci-switch-test",
     feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
 ))]
 extern "C" fn task_a_entry() -> ! {
     assert!(
@@ -185,7 +187,10 @@ extern "C" fn task_a_entry() -> ! {
     #[cfg(feature = "m35c2c-ci-switch-test")]
     panic!("C2c task A resumed after the one-way A -> B proof");
 
-    #[cfg(feature = "m35c2d-ci-roundtrip-test")]
+    #[cfg(any(
+    feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
+))]
     {
         let state = scheduler();
         let task_a = state.task_a();
@@ -206,9 +211,20 @@ extern "C" fn task_a_entry() -> ! {
             "FreeWorldOS: M3.5-C2d task A: resumed saved_b_rsp={:#x} if=on\n",
             task_b.saved_stack_pointer(),
         ));
+
+        #[cfg(feature = "m35c2e-ci-irq-stack-test")]
+        wait_for_timer_tick_on_task_stack("A");
+
+        #[cfg(feature = "m35c2d-ci-roundtrip-test")]
         crate::arch::serial::println(
             "FreeWorldOS: M3.5-C2d round trip: passed A->B->A scheduler_refs=owned interrupt_window=closed if_policy=resume_enabled timer_preemption=off",
         );
+
+        #[cfg(feature = "m35c2e-ci-irq-stack-test")]
+        crate::arch::serial::println(
+            "FreeWorldOS: M3.5-C2e irq-on-task-stack: passed A=ok B=ok target_rsp_under_cli=ok timer_preemption=off",
+        );
+
         arch::halt_loop()
     }
 }
@@ -216,6 +232,7 @@ extern "C" fn task_a_entry() -> ! {
 #[cfg(any(
     feature = "m35c2c-ci-switch-test",
     feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
 ))]
 fn yield_a_to_b() {
     let state = scheduler();
@@ -233,15 +250,17 @@ fn yield_a_to_b() {
         "C2c voluntary yield requires IF enabled on entry"
     );
 
+    // Close the stale/changed-target window before reading the incoming saved
+    // RSP. This is the ordering template for later timer-selected switching.
+    arch::disable_interrupts();
     let new_rsp = task_b.saved_stack_pointer();
     assert!(
         task_b.saved_stack_pointer_in_stack(),
         "C2c task B saved RSP is outside its stack"
     );
 
-    // Close the stale-saved-RSP window: from the first state mutation until
-    // B is executing its restored stack, maskable interrupts remain disabled.
-    arch::disable_interrupts();
+    // From this point until B is executing its restored stack, maskable
+    // interrupts remain disabled.
     task_a
         .prepare_running_context_save()
         .expect("C2c task A could not prepare Running -> Runnable save");
@@ -270,6 +289,7 @@ fn yield_a_to_b() {
 #[cfg(any(
     feature = "m35c2c-ci-switch-test",
     feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
 ))]
 extern "C" fn task_b_entry() -> ! {
     assert!(
@@ -327,8 +347,14 @@ extern "C" fn task_b_entry() -> ! {
         arch::halt_loop()
     }
 
-    #[cfg(feature = "m35c2d-ci-roundtrip-test")]
+    #[cfg(any(
+    feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
+))]
     {
+        #[cfg(feature = "m35c2e-ci-irq-stack-test")]
+        wait_for_timer_tick_on_task_stack("B");
+
         crate::arch::serial::println(
             "FreeWorldOS: M3.5-C2d task B: yielding back to A if=on",
         );
@@ -338,12 +364,18 @@ extern "C" fn task_b_entry() -> ! {
 }
 
 
-#[cfg(feature = "m35c2d-ci-roundtrip-test")]
+#[cfg(any(
+    feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
+))]
 pub fn ci_interrupt_safe_roundtrip_test() -> ! {
     ci_voluntary_switch_test()
 }
 
-#[cfg(feature = "m35c2d-ci-roundtrip-test")]
+#[cfg(any(
+    feature = "m35c2d-ci-roundtrip-test",
+    feature = "m35c2e-ci-irq-stack-test",
+))]
 fn yield_b_to_a() {
     let state = scheduler();
     let task_a = state.task_a();
@@ -359,13 +391,12 @@ fn yield_b_to_a() {
         "C2d B->A voluntary yield requires IF enabled on entry"
     );
 
+    arch::disable_interrupts();
     let new_rsp = task_a.saved_stack_pointer();
     assert!(
         task_a.saved_stack_pointer_in_stack(),
         "C2d task A saved RSP is outside its stack before resume"
     );
-
-    arch::disable_interrupts();
     task_b
         .prepare_running_context_save()
         .expect("C2d task B could not prepare Running -> Runnable save");
@@ -388,4 +419,39 @@ fn yield_b_to_a() {
         arch::interrupts_enabled(),
         "C2d resumed task B with IF disabled"
     );
+}
+
+
+#[cfg(feature = "m35c2e-ci-irq-stack-test")]
+pub fn ci_irq_on_task_stack_test() -> ! {
+    ci_voluntary_switch_test()
+}
+
+#[cfg(feature = "m35c2e-ci-irq-stack-test")]
+fn wait_for_timer_tick_on_task_stack(task_name: &str) {
+    assert!(
+        arch::interrupts_enabled(),
+        "C2e timer IRQ proof requires IF enabled"
+    );
+
+    let before = super::time::now().0;
+    loop {
+        // SAFETY: IF is enabled, so HLT sleeps until an interrupt. The loop
+        // only succeeds when the existing LAPIC timer handler advances the
+        // architecture-neutral tick count and returns to this same task.
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+
+        let after = super::time::now().0;
+        if after != before {
+            crate::arch::serial::write_fmt(format_args!(
+                "FreeWorldOS: M3.5-C2e irq_on_task_stack=ok task={} before={} after={}\n",
+                task_name,
+                before,
+                after,
+            ));
+            return;
+        }
+    }
 }
