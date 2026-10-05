@@ -322,11 +322,20 @@ pub fn task_ownership_ci_self_test() -> Result<(), ObjectError> {
             PagePermissions::read_write(),
         )
     };
-    if guard_map != Err(MemoryError::VirtualPageReserved) {
-        unsafe { crate::memory::free_frame(guard_probe_frame)?; }
-        return Err(ObjectError::SelfTestFailed);
+    match guard_map {
+        Err(MemoryError::VirtualPageReserved) => {
+            unsafe { crate::memory::free_frame(guard_probe_frame)?; }
+        }
+        Ok(()) => {
+            let mapped = crate::memory::unmap_page(info.guard_page)?;
+            unsafe { crate::memory::free_frame(mapped)?; }
+            return Err(ObjectError::SelfTestFailed);
+        }
+        Err(_) => {
+            unsafe { crate::memory::free_frame(guard_probe_frame)?; }
+            return Err(ObjectError::SelfTestFailed);
+        }
     }
-    unsafe { crate::memory::free_frame(guard_probe_frame)?; }
 
     let object = handle::get(task_handle, Rights::READ)?;
     let task = match object.as_ref() {
