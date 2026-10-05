@@ -33,6 +33,10 @@ pub fn disable_interrupts() {
     interrupts::disable();
 }
 
+pub fn enable_interrupts() {
+    interrupts::enable();
+}
+
 pub fn interrupts_enabled() -> bool {
     interrupts::are_enabled()
 }
@@ -56,6 +60,7 @@ pub unsafe fn probe_timer_all_gprs_once() -> bool {
 #[cfg(any(
     feature = "m35c2g-ci-resume-interrupt-test",
     feature = "m35c2i-ci-preempt-test",
+    feature = "m35c2j-ci-run-queue-test",
 ))]
 pub unsafe fn resume_interrupt_context(new_rsp: u64) -> ! {
     unsafe { context_switch::resume_interrupt_context(new_rsp) }

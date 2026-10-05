@@ -86,6 +86,7 @@ pub struct TaskObject {
     saved_stack_pointer: AtomicU64,
     saved_context_kind: AtomicU8,
     saved_context_bytes: AtomicU64,
+    preemption_disable_depth: AtomicU64,
     stack: KernelStack,
 }
 
@@ -104,6 +105,7 @@ impl TaskObject {
             saved_stack_pointer: AtomicU64::new(0),
             saved_context_kind: AtomicU8::new(SavedContextKind::None as u8),
             saved_context_bytes: AtomicU64::new(0),
+            preemption_disable_depth: AtomicU64::new(0),
             stack: KernelStack::new()?,
         })
     }
@@ -123,6 +125,7 @@ impl TaskObject {
     pub(super) fn can_release_stack(&self) -> bool {
         matches!(self.state(), TaskState::Created | TaskState::Stopped)
             && !self.saved_stack_pointer_present.load(Ordering::Acquire)
+            && self.preemption_disable_depth.load(Ordering::Acquire) == 0
     }
 
     pub(crate) fn state(&self) -> TaskState {
@@ -231,6 +234,40 @@ impl TaskObject {
         SavedContextKind::from_raw(self.saved_context_kind.load(Ordering::Acquire))
     }
 
+    pub(crate) fn preemption_disable(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.preemption_disable_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_add(1)
+            })
+            .map_err(|_| ObjectError::InvalidTaskState)?;
+        Ok(())
+    }
+
+    pub(crate) fn preemption_enable(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.preemption_disable_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                (depth > 0).then_some(depth - 1)
+            })
+            .map_err(|_| ObjectError::InvalidTaskState)?;
+        Ok(())
+    }
+
+    pub(crate) fn preemption_disabled(&self) -> bool {
+        self.preemption_disable_depth.load(Ordering::Acquire) != 0
+    }
+
+    pub(crate) fn preemption_disable_depth(&self) -> u64 {
+        self.preemption_disable_depth.load(Ordering::Acquire)
+    }
+
     pub(crate) fn saved_stack_pointer_in_stack(&self) -> bool {
         if !self.saved_stack_pointer_present() {
             return false;
@@ -297,6 +334,7 @@ impl TaskObject {
         if self.state() != TaskState::Running
             || self.saved_stack_pointer_present()
             || self.saved_context_kind() != SavedContextKind::None
+            || self.preemption_disabled()
         {
             return Err(ObjectError::InvalidTaskState);
         }

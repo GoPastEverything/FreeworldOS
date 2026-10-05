@@ -1151,3 +1151,596 @@ pub(crate) fn timer_preemption_handoff() -> ! {
         SavedContextKind::None => unreachable!(),
     }
 }
+
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+const C2J_RUN_QUEUE_CAPACITY: usize = 8;
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+struct C2jRunQueue {
+    slots: [Option<ObjectRef>; C2J_RUN_QUEUE_CAPACITY],
+    cleanup: [Option<ObjectRef>; C2J_RUN_QUEUE_CAPACITY],
+    idle: ObjectRef,
+    current: Option<usize>,
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+impl C2jRunQueue {
+    fn new(idle: ObjectRef) -> Self {
+        Self {
+            slots: core::array::from_fn(|_| None),
+            cleanup: core::array::from_fn(|_| None),
+            idle,
+            current: None,
+        }
+    }
+
+    fn enqueue(&mut self, object: ObjectRef) -> usize {
+        assert!(
+            !arch::interrupts_enabled(),
+            "C2j run-queue mutation requires interrupts off"
+        );
+        assert!(
+            self.slots
+                .iter()
+                .flatten()
+                .all(|existing| !Arc::ptr_eq(existing, &object)),
+            "C2j attempted to enqueue the same task twice"
+        );
+
+        let index = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .expect("C2j run queue capacity exhausted");
+        self.slots[index] = Some(object);
+        index
+    }
+
+    fn task_at(&self, index: usize) -> &TaskObject {
+        object::task_from_ref(
+            self.slots[index]
+                .as_ref()
+                .expect("C2j run-queue slot unexpectedly empty"),
+        )
+        .expect("C2j run-queue entry changed object type")
+    }
+
+    fn idle_task(&self) -> &TaskObject {
+        object::task_from_ref(&self.idle)
+            .expect("C2j idle reference changed object type")
+    }
+
+    fn current_task(&self) -> &TaskObject {
+        match self.current {
+            Some(index) => self.task_at(index),
+            None => self.idle_task(),
+        }
+    }
+
+    fn next_runnable_after(&self, current: Option<usize>) -> Option<usize> {
+        let start = current.map_or(0, |index| (index + 1) % C2J_RUN_QUEUE_CAPACITY);
+
+        for offset in 0..C2J_RUN_QUEUE_CAPACITY {
+            let index = (start + offset) % C2J_RUN_QUEUE_CAPACITY;
+            let Some(object) = self.slots[index].as_ref() else {
+                continue;
+            };
+            let task = object::task_from_ref(object)
+                .expect("C2j run-queue entry changed object type");
+
+            if task.state() == TaskState::Runnable
+                && task.saved_stack_pointer_present()
+                && task.saved_stack_pointer_in_stack()
+                && task.saved_context_kind() != SavedContextKind::None
+            {
+                return Some(index);
+            }
+        }
+
+        None
+    }
+
+    fn defer_cleanup(&mut self, object: ObjectRef) {
+        assert!(
+            !arch::interrupts_enabled(),
+            "C2j deferred cleanup mutation requires interrupts off"
+        );
+        let slot = self
+            .cleanup
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("C2j deferred cleanup capacity exhausted");
+        *slot = Some(object);
+    }
+
+    fn drain_cleanup(&mut self) -> u64 {
+        assert!(
+            !arch::interrupts_enabled(),
+            "C2j cleanup requires interrupts off"
+        );
+
+        let mut cleaned = 0;
+        for slot in &mut self.cleanup {
+            if let Some(object) = slot.take() {
+                drop(object);
+                cleaned += 1;
+            }
+        }
+        cleaned
+    }
+
+    fn runnable_empty(&self) -> bool {
+        self.slots.iter().all(Option::is_none)
+    }
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+struct C2jRunQueueStorage(UnsafeCell<MaybeUninit<C2jRunQueue>>);
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+unsafe impl Sync for C2jRunQueueStorage {}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_RUN_QUEUE: C2jRunQueueStorage =
+    C2jRunQueueStorage(UnsafeCell::new(MaybeUninit::uninit()));
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_RUN_QUEUE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_SWITCHES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_VOLUNTARY_STARTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_INTERRUPT_RESUMES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_A_RUNS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_B_RUNS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_C_RUNS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_PREEMPT_BLOCKED_TICKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_PREEMPT_BLOCK_PROVEN: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_C_EXITED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_B_EXITED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_EXITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+static C2J_CLEANED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_queue_mut() -> &'static mut C2jRunQueue {
+    assert!(
+        C2J_RUN_QUEUE_INITIALIZED.load(Ordering::Acquire),
+        "C2j run queue used before initialization"
+    );
+    assert!(
+        !arch::interrupts_enabled(),
+        "C2j run-queue access requires interrupts off"
+    );
+
+    // SAFETY: C2j is bootstrap-CPU-only. All task-context access disables
+    // interrupts first, and timer-context access already runs with IF clear.
+    unsafe { &mut *(*C2J_RUN_QUEUE.0.get()).as_mut_ptr() }
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_install_queue(idle: ObjectRef) {
+    assert!(!arch::interrupts_enabled());
+    assert!(
+        !C2J_RUN_QUEUE_INITIALIZED.load(Ordering::Acquire),
+        "C2j run queue installed twice"
+    );
+
+    // SAFETY: Single bootstrap CPU, one initialization before publication.
+    unsafe {
+        (*C2J_RUN_QUEUE.0.get()).write(C2jRunQueue::new(idle));
+    }
+    C2J_RUN_QUEUE_INITIALIZED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_drain_cleanup_from_live_stack() {
+    assert!(
+        arch::interrupts_enabled(),
+        "C2j task cleanup entry expects IF enabled"
+    );
+
+    arch::disable_interrupts();
+    let cleaned = c2j_queue_mut().drain_cleanup();
+    if cleaned != 0 {
+        C2J_CLEANED.fetch_add(cleaned, Ordering::AcqRel);
+    }
+    arch::enable_interrupts();
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_preemption_disable_current() {
+    assert!(arch::interrupts_enabled());
+    arch::disable_interrupts();
+    c2j_queue_mut()
+        .current_task()
+        .preemption_disable()
+        .expect("C2j could not enter preemption-disabled region");
+    arch::enable_interrupts();
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_preemption_enable_current() {
+    assert!(arch::interrupts_enabled());
+    arch::disable_interrupts();
+    c2j_queue_mut()
+        .current_task()
+        .preemption_enable()
+        .expect("C2j could not leave preemption-disabled region");
+    arch::enable_interrupts();
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+pub fn ci_run_queue_test() -> ! {
+    let task_a = object::create_task_ref().expect("C2j failed to create task A");
+    let task_b = object::create_task_ref().expect("C2j failed to create task B");
+    let task_c = object::create_task_ref().expect("C2j failed to create task C");
+    let idle = object::create_task_ref().expect("C2j failed to create idle task");
+
+    for object_ref in [&task_a, &task_b, &task_c, &idle] {
+        let handle = object::install_handle_for_ref(object_ref, Rights::READ)
+            .expect("C2j failed to install bootstrap task handle");
+        object::close(handle).expect("C2j failed to close bootstrap task handle");
+    }
+
+    object::task_from_ref(&task_a)
+        .expect("C2j task A reference changed type")
+        .prepare_initial_context(c2j_task_a_entry)
+        .expect("C2j failed to prepare task A");
+    object::task_from_ref(&task_b)
+        .expect("C2j task B reference changed type")
+        .prepare_initial_context(c2j_task_b_entry)
+        .expect("C2j failed to prepare task B");
+    object::task_from_ref(&task_c)
+        .expect("C2j task C reference changed type")
+        .prepare_initial_context(c2j_task_c_entry)
+        .expect("C2j failed to prepare task C");
+    object::task_from_ref(&idle)
+        .expect("C2j idle reference changed type")
+        .prepare_initial_context(c2j_idle_entry)
+        .expect("C2j failed to prepare idle task");
+
+    assert!(arch::interrupts_enabled());
+    arch::disable_interrupts();
+
+    c2j_install_queue(idle);
+    let queue = c2j_queue_mut();
+    let a_slot = queue.enqueue(task_a);
+    let b_slot = queue.enqueue(task_b);
+    let c_slot = queue.enqueue(task_c);
+    assert_eq!((a_slot, b_slot, c_slot), (0, 1, 2));
+
+    let first_rsp = queue.task_at(a_slot).saved_stack_pointer();
+    queue
+        .task_at(a_slot)
+        .begin_running_from_saved()
+        .expect("C2j failed to start task A");
+    queue.current = Some(a_slot);
+
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2j run queue: starting A->B->C rotation capacity=8",
+    );
+
+    // SAFETY: A's Voluntary frame is valid, the queue owns all task lifetimes,
+    // and IF remains clear until A's task stack/register frame is active.
+    unsafe { arch::start_first_task(first_rsp) }
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+extern "C" fn c2j_task_a_entry() -> ! {
+    c2j_preemption_disable_current();
+
+    let before_tick = super::time::now().0;
+    let before_switches = C2J_SWITCHES.load(Ordering::Acquire);
+    while super::time::now().0 == before_tick {
+        // SAFETY: IF is enabled. The timer must return to A while its
+        // preemption-disable depth is nonzero.
+        unsafe {
+            core::arch::asm!("hlt", options(nostack, preserves_flags));
+        }
+    }
+
+    assert_eq!(
+        C2J_SWITCHES.load(Ordering::Acquire),
+        before_switches,
+        "C2j timer switched tasks inside a preemption-disabled region"
+    );
+    assert!(
+        C2J_PREEMPT_BLOCKED_TICKS.load(Ordering::Acquire) >= 1,
+        "C2j timer did not observe the preemption-disable counter"
+    );
+    C2J_PREEMPT_BLOCK_PROVEN.store(true, Ordering::Release);
+    c2j_preemption_enable_current();
+
+    c2j_task_loop(0)
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+extern "C" fn c2j_task_b_entry() -> ! {
+    c2j_task_loop(1)
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+extern "C" fn c2j_task_c_entry() -> ! {
+    c2j_task_loop(2)
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_task_loop(slot: usize) -> ! {
+    loop {
+        c2j_drain_cleanup_from_live_stack();
+
+        match slot {
+            0 => {
+                C2J_A_RUNS.fetch_add(1, Ordering::AcqRel);
+                if C2J_C_EXITED.load(Ordering::Acquire)
+                    && C2J_B_EXITED.load(Ordering::Acquire)
+                {
+                    c2j_exit_current(slot);
+                }
+            }
+            1 => {
+                C2J_B_RUNS.fetch_add(1, Ordering::AcqRel);
+                if C2J_C_EXITED.load(Ordering::Acquire) {
+                    C2J_B_EXITED.store(true, Ordering::Release);
+                    c2j_exit_current(slot);
+                }
+            }
+            2 => {
+                C2J_C_RUNS.fetch_add(1, Ordering::AcqRel);
+                if C2J_SWITCHES.load(Ordering::Acquire) >= 6 {
+                    C2J_C_EXITED.store(true, Ordering::Release);
+                    c2j_exit_current(slot);
+                }
+            }
+            _ => panic!("C2j invalid task slot"),
+        }
+
+        assert!(arch::interrupts_enabled());
+        // SAFETY: The timer may preempt and rotate to another queue member.
+        unsafe {
+            core::arch::asm!("hlt", options(nostack, preserves_flags));
+        }
+    }
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+fn c2j_exit_current(slot: usize) -> ! {
+    assert!(arch::interrupts_enabled());
+    arch::disable_interrupts();
+
+    let queue = c2j_queue_mut();
+    assert_eq!(queue.current, Some(slot));
+
+    let object_ref = queue.slots[slot]
+        .take()
+        .expect("C2j exiting task missing from run queue");
+    let exiting = object::task_from_ref(&object_ref)
+        .expect("C2j exiting entry changed object type");
+    exiting
+        .stop_running_without_saved_context()
+        .expect("C2j exiting task was not safely stoppable");
+
+    queue.defer_cleanup(object_ref);
+    C2J_EXITS.fetch_add(1, Ordering::AcqRel);
+
+    if let Some(next_slot) = queue.next_runnable_after(Some(slot)) {
+        let incoming = queue.task_at(next_slot);
+        let next_rsp = incoming.saved_stack_pointer();
+        let next_kind = incoming.saved_context_kind();
+
+        match next_kind {
+            SavedContextKind::Voluntary => incoming
+                .begin_running_from_saved()
+                .expect("C2j exit path could not start Voluntary task"),
+            SavedContextKind::Interrupt => incoming
+                .begin_running_from_interrupt()
+                .expect("C2j exit path could not resume Interrupt task"),
+            SavedContextKind::None => panic!("C2j exit path selected task without context"),
+        }
+
+        queue.current = Some(next_slot);
+
+        match next_kind {
+            SavedContextKind::Voluntary => {
+                // SAFETY: IF is clear and next_rsp is a validated task-owned
+                // Voluntary frame. The start path enables IF on the new stack.
+                unsafe { arch::start_first_task(next_rsp) }
+            }
+            SavedContextKind::Interrupt => {
+                // SAFETY: IF is clear and next_rsp is a validated task-owned
+                // Interrupt frame. IRETQ restores that task's RFLAGS.
+                unsafe { arch::resume_interrupt_context(next_rsp) }
+            }
+            SavedContextKind::None => unreachable!(),
+        }
+    }
+
+    let idle = queue.idle_task();
+    let idle_rsp = idle.saved_stack_pointer();
+    let idle_kind = idle.saved_context_kind();
+
+    match idle_kind {
+        SavedContextKind::Voluntary => idle
+            .begin_running_from_saved()
+            .expect("C2j exit path could not start idle task"),
+        SavedContextKind::Interrupt => idle
+            .begin_running_from_interrupt()
+            .expect("C2j exit path could not resume idle task"),
+        SavedContextKind::None => panic!("C2j idle task has no saved context"),
+    }
+    queue.current = None;
+
+    match idle_kind {
+        SavedContextKind::Voluntary => {
+            // SAFETY: idle owns a validated Voluntary frame.
+            unsafe { arch::start_first_task(idle_rsp) }
+        }
+        SavedContextKind::Interrupt => {
+            // SAFETY: idle owns a validated Interrupt frame.
+            unsafe { arch::resume_interrupt_context(idle_rsp) }
+        }
+        SavedContextKind::None => unreachable!(),
+    }
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+extern "C" fn c2j_idle_entry() -> ! {
+    c2j_drain_cleanup_from_live_stack();
+
+    assert!(arch::interrupts_enabled());
+    arch::disable_interrupts();
+    let queue = c2j_queue_mut();
+
+    assert!(queue.current.is_none());
+    assert!(queue.runnable_empty());
+    assert_eq!(queue.idle_task().state(), TaskState::Running);
+    assert_eq!(C2J_EXITS.load(Ordering::Acquire), 3);
+    assert_eq!(C2J_CLEANED.load(Ordering::Acquire), 3);
+    assert!(C2J_PREEMPT_BLOCK_PROVEN.load(Ordering::Acquire));
+    assert!(C2J_SWITCHES.load(Ordering::Acquire) >= 6);
+    assert!(C2J_A_RUNS.load(Ordering::Acquire) >= 2);
+    assert!(C2J_B_RUNS.load(Ordering::Acquire) >= 2);
+    assert!(C2J_C_RUNS.load(Ordering::Acquire) >= 2);
+    assert_eq!(C2J_VOLUNTARY_STARTS.load(Ordering::Acquire), 2);
+    assert!(C2J_INTERRUPT_RESUMES.load(Ordering::Acquire) >= 4);
+    assert!(!arch::in_interrupt());
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2j run queue: rotation=A>B>C>A switches={} A_runs={} B_runs={} C_runs={} preempt_blocked_ticks={} exits={} cleaned={} idle=running queue=empty capacity=8 mutation_if=off\n",
+        C2J_SWITCHES.load(Ordering::Acquire),
+        C2J_A_RUNS.load(Ordering::Acquire),
+        C2J_B_RUNS.load(Ordering::Acquire),
+        C2J_C_RUNS.load(Ordering::Acquire),
+        C2J_PREEMPT_BLOCKED_TICKS.load(Ordering::Acquire),
+        C2J_EXITS.load(Ordering::Acquire),
+        C2J_CLEANED.load(Ordering::Acquire),
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2j proof: passed variable_queue=ok three_tasks=ok preempt_disable=ok deferred_cleanup=ok idle=ok priorities=off smp=off",
+    );
+
+    arch::halt_loop()
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+pub(crate) fn timer_run_queue_capture(
+    frame_rsp: u64,
+    frame_bytes: u64,
+    hardware_rsp: u64,
+    rflags: u64,
+    aligned: bool,
+) -> bool {
+    if !C2J_RUN_QUEUE_INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let queue = c2j_queue_mut();
+    let outgoing = queue.current_task();
+
+    if outgoing.preemption_disabled() {
+        C2J_PREEMPT_BLOCKED_TICKS.fetch_add(1, Ordering::AcqRel);
+        return false;
+    }
+
+    if queue.next_runnable_after(queue.current).is_none() {
+        return false;
+    }
+
+    let info = outgoing.info();
+    let hardware_rsp_in_stack =
+        hardware_rsp >= info.stack_bottom && hardware_rsp <= info.stack_top;
+
+    assert!(aligned, "C2j timer frame call boundary lost 16-byte alignment");
+    assert!(hardware_rsp_in_stack, "C2j interrupted RSP escaped current stack");
+    assert!(rflags & (1 << 9) != 0, "C2j timer interrupted task with IF clear");
+
+    outgoing
+        .observe_interrupt_context(frame_rsp, frame_bytes)
+        .expect("C2j failed to publish outgoing Interrupt frame");
+    assert!(outgoing.saved_stack_pointer_in_stack());
+    true
+}
+
+#[cfg(feature = "m35c2j-ci-run-queue-test")]
+pub(crate) fn timer_run_queue_handoff() -> ! {
+    assert!(!arch::in_interrupt());
+    assert!(!arch::interrupts_enabled());
+
+    let queue = c2j_queue_mut();
+    let old_current = queue.current;
+    let outgoing = queue.current_task();
+
+    assert_eq!(outgoing.state(), TaskState::Running);
+    assert_eq!(outgoing.saved_context_kind(), SavedContextKind::Interrupt);
+    assert!(outgoing.saved_stack_pointer_in_stack());
+
+    let next_slot = queue
+        .next_runnable_after(old_current)
+        .expect("C2j handoff lost its runnable target");
+    let incoming = queue.task_at(next_slot);
+    let next_rsp = incoming.saved_stack_pointer();
+    let next_kind = incoming.saved_context_kind();
+
+    if C2J_SWITCHES.load(Ordering::Acquire) < 6 {
+        let switch = C2J_SWITCHES.load(Ordering::Acquire) as usize;
+        let expected = [
+            (Some(0), 1usize),
+            (Some(1), 2usize),
+            (Some(2), 0usize),
+            (Some(0), 1usize),
+            (Some(1), 2usize),
+            (Some(2), 0usize),
+        ][switch];
+        assert_eq!(
+            (old_current, next_slot),
+            expected,
+            "C2j first six timer selections were not A->B->C->A"
+        );
+    }
+
+    outgoing
+        .park_interrupt_context()
+        .expect("C2j failed to park outgoing Interrupt context");
+
+    match next_kind {
+        SavedContextKind::Voluntary => {
+            incoming
+                .begin_running_from_saved()
+                .expect("C2j failed to start incoming Voluntary context");
+            C2J_VOLUNTARY_STARTS.fetch_add(1, Ordering::AcqRel);
+        }
+        SavedContextKind::Interrupt => {
+            incoming
+                .begin_running_from_interrupt()
+                .expect("C2j failed to resume incoming Interrupt context");
+            C2J_INTERRUPT_RESUMES.fetch_add(1, Ordering::AcqRel);
+        }
+        SavedContextKind::None => panic!("C2j selected runnable task without saved context"),
+    }
+
+    queue.current = Some(next_slot);
+    C2J_SWITCHES.fetch_add(1, Ordering::AcqRel);
+
+    match next_kind {
+        SavedContextKind::Voluntary => {
+            // SAFETY: target frame and stack were validated under IF=0.
+            unsafe { arch::start_first_task(next_rsp) }
+        }
+        SavedContextKind::Interrupt => {
+            // SAFETY: target Interrupt frame is scheduler-owned and validated.
+            unsafe { arch::resume_interrupt_context(next_rsp) }
+        }
+        SavedContextKind::None => unreachable!(),
+    }
+}

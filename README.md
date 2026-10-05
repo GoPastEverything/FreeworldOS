@@ -70,7 +70,7 @@ docs/
 - **M3:** ✅ deterministic kernel heap + native object + generational handles + rights attenuation + close/reclamation proof
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
-- **M3.5-C:** ◐ C1–C2h merged; C2i is the first real timer-selected policy: two scheduler-owned tasks, one-tick deterministic round-robin, context-kind-aware restore, still single-CPU with no priorities
+- **M3.5-C:** ◐ C1–C2i merged; C2j adds a bounded variable-size run queue, per-task preemption-disable nesting, a real idle task, and deferred off-stack cleanup for stopped tasks
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception

@@ -290,8 +290,24 @@ extern "C" fn __freeworld_apic_timer_dispatch(frame: *mut TimerInterruptFrame) {
         feature = "m35c2f-ci-trap-frame-test",
         feature = "m35c2g-ci-resume-interrupt-test",
         feature = "m35c2i-ci-preempt-test",
+        feature = "m35c2j-ci-run-queue-test",
     )))]
     let _ = frame;
+
+    #[cfg(feature = "m35c2j-ci-run-queue-test")]
+    let run_queue_preempt_ready = {
+        let frame_address = frame as u64;
+        // SAFETY: The timer entry's 160-byte frame is live until this
+        // dispatcher returns or transfers to another scheduler-owned stack.
+        let frame_ref = unsafe { &*frame };
+        crate::rt::scheduler::timer_run_queue_capture(
+            frame_address,
+            TIMER_INTERRUPT_FRAME_BYTES as u64,
+            frame_ref.rsp,
+            frame_ref.rflags,
+            frame_address & 0xf == 0,
+        )
+    };
 
     #[cfg(feature = "m35c2i-ci-preempt-test")]
     let preempt_ready = {
@@ -310,6 +326,14 @@ extern "C" fn __freeworld_apic_timer_dispatch(frame: *mut TimerInterruptFrame) {
 
     // Tick accounting and LAPIC EOI happen before any possible handoff.
     apic::timer_interrupt();
+
+    #[cfg(feature = "m35c2j-ci-run-queue-test")]
+    if run_queue_preempt_ready {
+        // EOI is complete. Drop CPU interrupt depth before rotating the real
+        // run queue and restoring the selected task.
+        drop(scope);
+        crate::rt::scheduler::timer_run_queue_handoff();
+    }
 
     #[cfg(feature = "m35c2i-ci-preempt-test")]
     if preempt_ready {

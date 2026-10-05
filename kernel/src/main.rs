@@ -174,6 +174,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         rt::scheduler::ci_timer_round_robin_test();
     }
 
+    #[cfg(feature = "m35c2j-ci-run-queue-test")]
+    {
+        rt::scheduler::ci_run_queue_test();
+    }
+
     #[cfg(feature = "m35c-ci-guard-fault-test")]
     {
         object::task_guard_fault_ci_test();
