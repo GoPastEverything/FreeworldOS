@@ -46,8 +46,8 @@ pub unsafe fn start_first_task(new_rsp: u64) -> ! {
 }
 
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]
-pub unsafe fn probe_timer_callee_saved_once() -> bool {
-    unsafe { timer_entry::probe_timer_callee_saved_once() }
+pub unsafe fn probe_timer_all_gprs_once() -> bool {
+    unsafe { timer_entry::probe_timer_all_gprs_once() }
 }
 
 pub fn in_interrupt() -> bool {

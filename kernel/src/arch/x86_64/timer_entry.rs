@@ -3,7 +3,26 @@ use core::{
     mem::size_of,
 };
 
-use x86_64::VirtAddr;
+use x86_64::{
+    registers::segmentation::{Segment, CS},
+    VirtAddr,
+};
+
+const PROBE_RAX: u64 = 0x1101;
+const PROBE_RBX: u64 = 0x2202;
+const PROBE_RCX: u64 = 0x3303;
+const PROBE_RDX: u64 = 0x4404;
+const PROBE_RSI: u64 = 0x5505;
+const PROBE_RDI: u64 = 0x6606;
+const PROBE_RBP: u64 = 0x7707;
+const PROBE_R8: u64 = 0x0808;
+const PROBE_R9: u64 = 0x0909;
+const PROBE_R10: u64 = 0x1010;
+const PROBE_R11: u64 = 0x1111;
+const PROBE_R12: u64 = 0x1212;
+const PROBE_R13: u64 = 0x1313;
+const PROBE_R14: u64 = 0x1414;
+const PROBE_R15: u64 = 0x1515;
 
 use super::{apic, interrupt_context};
 
@@ -84,9 +103,9 @@ __freeworld_apic_timer_entry:
     pop rax
     iretq
 
-    .global __freeworld_probe_timer_callee_saved
-    .type __freeworld_probe_timer_callee_saved,@function
-__freeworld_probe_timer_callee_saved:
+    .global __freeworld_probe_timer_all_gprs
+    .type __freeworld_probe_timer_all_gprs,@function
+__freeworld_probe_timer_all_gprs:
     push rbx
     push rbp
     push r12
@@ -94,28 +113,57 @@ __freeworld_probe_timer_callee_saved:
     push r14
     push r15
 
-    mov rbx, 0x11111111
-    mov rbp, 0x22222222
-    mov r12, 0x33333333
-    mov r13, 0x44444444
-    mov r14, 0x55555555
-    mov r15, 0x66666666
+    mov rax, {probe_rax}
+    mov rbx, {probe_rbx}
+    mov rcx, {probe_rcx}
+    mov rdx, {probe_rdx}
+    mov rsi, {probe_rsi}
+    mov rdi, {probe_rdi}
+    mov rbp, {probe_rbp}
+    mov r8,  {probe_r8}
+    mov r9,  {probe_r9}
+    mov r10, {probe_r10}
+    mov r11, {probe_r11}
+    mov r12, {probe_r12}
+    mov r13, {probe_r13}
+    mov r14, {probe_r14}
+    mov r15, {probe_r15}
 
     hlt
+    .global __freeworld_probe_after_hlt
+__freeworld_probe_after_hlt:
+    cmp rax, {probe_rax}
+    jne 1f
+    cmp rbx, {probe_rbx}
+    jne 1f
+    cmp rcx, {probe_rcx}
+    jne 1f
+    cmp rdx, {probe_rdx}
+    jne 1f
+    cmp rsi, {probe_rsi}
+    jne 1f
+    cmp rdi, {probe_rdi}
+    jne 1f
+    cmp rbp, {probe_rbp}
+    jne 1f
+    cmp r8,  {probe_r8}
+    jne 1f
+    cmp r9,  {probe_r9}
+    jne 1f
+    cmp r10, {probe_r10}
+    jne 1f
+    cmp r11, {probe_r11}
+    jne 1f
+    cmp r12, {probe_r12}
+    jne 1f
+    cmp r13, {probe_r13}
+    jne 1f
+    cmp r14, {probe_r14}
+    jne 1f
+    cmp r15, {probe_r15}
+    jne 1f
 
     mov eax, 1
-    cmp rbx, 0x11111111
-    jne 1f
-    cmp rbp, 0x22222222
-    jne 1f
-    cmp r12, 0x33333333
-    jne 1f
-    cmp r13, 0x44444444
-    jne 1f
-    cmp r14, 0x55555555
-    jne 1f
-    cmp r15, 0x66666666
-    jne 1f
     jmp 2f
 1:
     xor eax, eax
@@ -127,49 +175,103 @@ __freeworld_probe_timer_callee_saved:
     pop rbp
     pop rbx
     ret
-    "#
-);
+    "#,
+    probe_rax = const PROBE_RAX,
+    probe_rbx = const PROBE_RBX,
+    probe_rcx = const PROBE_RCX,
+    probe_rdx = const PROBE_RDX,
+    probe_rsi = const PROBE_RSI,
+    probe_rdi = const PROBE_RDI,
+    probe_rbp = const PROBE_RBP,
+    probe_r8 = const PROBE_R8,
+    probe_r9 = const PROBE_R9,
+    probe_r10 = const PROBE_R10,
+    probe_r11 = const PROBE_R11,
+    probe_r12 = const PROBE_R12,
+    probe_r13 = const PROBE_R13,
+    probe_r14 = const PROBE_R14,
+    probe_r15 = const PROBE_R15,
+)
 
 unsafe extern "C" {
     fn __freeworld_apic_timer_entry();
-    fn __freeworld_probe_timer_callee_saved() -> u64;
+    fn __freeworld_probe_timer_all_gprs() -> u64;
+    static __freeworld_probe_after_hlt: u8;
 }
 
 pub fn handler_addr() -> VirtAddr {
     VirtAddr::new(__freeworld_apic_timer_entry as usize as u64)
 }
 
-/// Runs one HLT while fixed values occupy the SysV callee-saved registers and
+/// Runs one HLT while distinct fixed values occupy all fifteen GPRs and
 /// returns whether the timer entry restored every value.
 ///
 /// # Safety
 ///
 /// IF must be enabled and the periodic LAPIC timer must be running.
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]
-pub unsafe fn probe_timer_callee_saved_once() -> bool {
-    unsafe { __freeworld_probe_timer_callee_saved() != 0 }
+pub unsafe fn probe_timer_all_gprs_once() -> bool {
+    unsafe { __freeworld_probe_timer_all_gprs() != 0 }
+}
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+fn probe_after_hlt_address() -> u64 {
+    unsafe { core::ptr::addr_of!(__freeworld_probe_after_hlt) as u64 }
+}
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+fn probe_frame_fields_match(frame: &TimerInterruptFrame) -> bool {
+    let kernel_cs = u64::from(CS::get_reg().0);
+
+    frame.rax == PROBE_RAX
+        && frame.rbx == PROBE_RBX
+        && frame.rcx == PROBE_RCX
+        && frame.rdx == PROBE_RDX
+        && frame.rsi == PROBE_RSI
+        && frame.rdi == PROBE_RDI
+        && frame.rbp == PROBE_RBP
+        && frame.r8 == PROBE_R8
+        && frame.r9 == PROBE_R9
+        && frame.r10 == PROBE_R10
+        && frame.r11 == PROBE_R11
+        && frame.r12 == PROBE_R12
+        && frame.r13 == PROBE_R13
+        && frame.r14 == PROBE_R14
+        && frame.r15 == PROBE_R15
+        && frame.cs == kernel_cs
+        && frame.rip == probe_after_hlt_address()
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn __freeworld_apic_timer_dispatch(frame: *mut TimerInterruptFrame) {
-    let frame_address = frame as u64;
-    let aligned = frame_address & 0xf == 0;
-
-    // SAFETY: The assembly entry passes RSP after all 15 GPR pushes. Intel 64
-    // has already pushed SS, RSP, RFLAGS, CS and RIP, so this is the start of
-    // the live 160-byte timer frame.
-    let frame_ref = unsafe { &*frame };
-
     let scope = interrupt_context::enter();
 
     #[cfg(feature = "m35c2f-ci-trap-frame-test")]
-    crate::rt::scheduler::timer_interrupt_frame_enter(
-        frame_address,
-        TIMER_INTERRUPT_FRAME_BYTES as u64,
-        frame_ref.rsp,
-        frame_ref.rflags,
-        aligned,
-    );
+    {
+        let frame_address = frame as u64;
+        let aligned = frame_address & 0xf == 0;
+
+        // SAFETY: The assembly entry passes RSP after all 15 GPR pushes. Intel
+        // 64 has already pushed SS, RSP, RFLAGS, CS and RIP.
+        let frame_ref = unsafe { &*frame };
+        let interrupted_rsp_delta = frame_ref.rsp.checked_sub(frame_address);
+        let interrupted_rsp_delta_ok =
+            matches!(interrupted_rsp_delta, Some(160 | 168));
+        let frame_fields_ok = probe_frame_fields_match(frame_ref);
+
+        crate::rt::scheduler::timer_interrupt_frame_enter(
+            frame_address,
+            TIMER_INTERRUPT_FRAME_BYTES as u64,
+            frame_ref.rsp,
+            frame_ref.rflags,
+            aligned,
+            interrupted_rsp_delta_ok,
+            frame_fields_ok,
+        );
+    }
+
+    #[cfg(not(feature = "m35c2f-ci-trap-frame-test"))]
+    let _ = frame;
 
     // Tick accounting and LAPIC EOI happen here. Any future scheduling
     // decision from timer context must remain after this controller completion.

@@ -65,6 +65,10 @@ static C2F_INTERRUPTED_IF_ON: AtomicBool = AtomicBool::new(false);
 static C2F_SAME_TASK_RETURN_READY: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]
 static C2F_FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_FRAME_FIELDS_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_RSP_DELTA_OK: AtomicBool = AtomicBool::new(false);
 
 
 fn install(task_a: ObjectRef, task_b: ObjectRef) {
@@ -534,31 +538,33 @@ extern "C" fn task_timer_trap_entry() -> ! {
     assert!(arch::interrupts_enabled());
 
     let before = super::time::now().0;
-    let mut callee_saved_ok = true;
+    let mut all_gprs_ok = true;
 
     while super::time::now().0 == before {
         // SAFETY: IF is enabled and the periodic LAPIC timer is already live.
-        // The assembly probe restores the caller's own callee-saved registers
-        // before returning to Rust.
-        callee_saved_ok &= unsafe { arch::probe_timer_callee_saved_once() };
+        // The assembly probe verifies that all fifteen GPR values survive the
+        // timer entry/return before restoring the caller's callee-saved set.
+        all_gprs_ok &= unsafe { arch::probe_timer_all_gprs_once() };
     }
 
     let after = super::time::now().0;
     assert!(after > before);
-    assert!(callee_saved_ok, "C2f timer return changed a callee-saved register");
+    assert!(all_gprs_ok, "C2f timer return changed a general-purpose register");
     assert!(C2F_FRAME_OBSERVED.load(Ordering::Acquire));
     assert!(C2F_FRAME_KIND_OK.load(Ordering::Acquire));
     assert!(C2F_FRAME_IN_STACK.load(Ordering::Acquire));
     assert!(C2F_HARDWARE_RSP_IN_STACK.load(Ordering::Acquire));
     assert!(C2F_ENTRY_ALIGNMENT_OK.load(Ordering::Acquire));
     assert!(C2F_INTERRUPTED_IF_ON.load(Ordering::Acquire));
+    assert!(C2F_FRAME_FIELDS_OK.load(Ordering::Acquire));
+    assert!(C2F_RSP_DELTA_OK.load(Ordering::Acquire));
     assert!(C2F_SAME_TASK_RETURN_READY.load(Ordering::Acquire));
     assert_eq!(task.saved_context_kind(), SavedContextKind::None);
     assert!(!task.saved_stack_pointer_present());
     assert!(!arch::in_interrupt());
 
     crate::arch::serial::write_fmt(format_args!(
-        "FreeWorldOS: M3.5-C2f timer frame: frame={:#x} bytes=160 alignment=ok kind=interrupt in_stack=ok hardware_rsp=ok interrupted_if=on callee_saved=ok depth=clear eoi_before_scheduler=locked iret_same_task=ok\n",
+        "FreeWorldOS: M3.5-C2f timer frame: frame={:#x} bytes=160 alignment=ok kind=interrupt in_stack=ok hardware_rsp=ok rsp_delta=160|168 frame_fields=ok interrupted_if=on all_gprs=ok depth=clear eoi_before_scheduler=locked iret_same_task=ok\n",
         C2F_FRAME_ADDRESS.load(Ordering::Acquire),
     ));
     crate::arch::serial::println(
@@ -575,6 +581,8 @@ pub(crate) fn timer_interrupt_frame_enter(
     hardware_rsp: u64,
     rflags: u64,
     aligned: bool,
+    rsp_delta_ok: bool,
+    frame_fields_ok: bool,
 ) {
     if !SCHEDULER_INITIALIZED.load(Ordering::Acquire) {
         return;
@@ -604,6 +612,8 @@ pub(crate) fn timer_interrupt_frame_enter(
     C2F_HARDWARE_RSP_IN_STACK.store(hardware_rsp_in_stack, Ordering::Release);
     C2F_ENTRY_ALIGNMENT_OK.store(aligned, Ordering::Release);
     C2F_INTERRUPTED_IF_ON.store(rflags & (1 << 9) != 0, Ordering::Release);
+    C2F_RSP_DELTA_OK.store(rsp_delta_ok, Ordering::Release);
+    C2F_FRAME_FIELDS_OK.store(frame_fields_ok, Ordering::Release);
 }
 
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]

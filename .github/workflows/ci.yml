@@ -484,7 +484,7 @@ jobs:
           cat timer-trap-frame-serial.log
 
           grep -Fq "FreeWorldOS: M3.5-C2f timer frame: starting same-task iretq proof" timer-trap-frame-serial.log
-          grep -Eq "FreeWorldOS: M3.5-C2f timer frame: frame=0xffffa[0-9a-f]+ bytes=160 alignment=ok kind=interrupt in_stack=ok hardware_rsp=ok interrupted_if=on callee_saved=ok depth=clear eoi_before_scheduler=locked iret_same_task=ok" timer-trap-frame-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2f timer frame: frame=0xffffa[0-9a-f]+ bytes=160 alignment=ok kind=interrupt in_stack=ok hardware_rsp=ok rsp_delta=160\|168 frame_fields=ok interrupted_if=on all_gprs=ok depth=clear eoi_before_scheduler=locked iret_same_task=ok" timer-trap-frame-serial.log
           grep -Fq "FreeWorldOS: M3.5-C2f trap-frame proof: passed timer_only=ok switch=off" timer-trap-frame-serial.log
 
           if grep -Fq "KERNEL PANIC" timer-trap-frame-serial.log \
