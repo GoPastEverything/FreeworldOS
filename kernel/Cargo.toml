@@ -13,6 +13,9 @@ default = []
 m1-ci-self-test = []
 m3-ci-self-test = []
 m35a-ci-self-test = []
+m35b-ci-self-test = []
+m35b-ci-panic-test = []
+m35b-ci-fatal-test = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

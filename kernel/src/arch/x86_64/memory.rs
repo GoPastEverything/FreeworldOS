@@ -665,6 +665,11 @@ pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
 }
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
+    assert!(
+        !crate::debug::panic::is_active(),
+        "FreeWorld frame allocation attempted during panic/fatal dump"
+    );
+
     with_manager(|manager| {
         manager
             .allocator
@@ -677,6 +682,11 @@ pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
 }
 
 pub unsafe fn free_frame(frame: PhysFrame) -> Result<(), MemoryError> {
+    assert!(
+        !crate::debug::panic::is_active(),
+        "FreeWorld frame return attempted during panic/fatal dump"
+    );
+
     with_manager(|manager| manager.allocator.release_frame(frame))?
 }
 

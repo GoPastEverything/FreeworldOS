@@ -30,6 +30,21 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
     let _ = writer.write_fmt(args);
 }
 
+/// Raw panic/NMI-safe serial path.
+///
+/// This does not allocate, format, or acquire a lock. It is intentionally kept
+/// separate from the normal fmt renderer so NMI and panic reentry can emit a
+/// final diagnostic even when higher-level logging is unsafe.
+pub fn write_raw(bytes: &[u8]) {
+    if !READY.load(Ordering::Acquire) {
+        return;
+    }
+
+    for &byte in bytes {
+        write_byte(byte);
+    }
+}
+
 struct SerialWriter;
 
 impl Write for SerialWriter {
