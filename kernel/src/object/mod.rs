@@ -31,6 +31,7 @@ pub enum ObjectError {
     WrongObjectType,
     TaskIdExhausted,
     TaskStackSlotsExhausted,
+    InvalidTaskState,
     SelfTestFailed,
 }
 
@@ -58,8 +59,28 @@ pub fn create_counter(initial: u64, rights: Rights) -> Result<Handle, ObjectErro
 }
 
 pub fn create_task(rights: Rights) -> Result<Handle, ObjectError> {
-    let object = Arc::new(FwObject::Task(TaskObject::new()?));
+    let object = create_task_ref()?;
     Ok(handle::insert(object, rights)?)
+}
+
+pub(crate) type ObjectRef = Arc<FwObject>;
+
+pub(crate) fn create_task_ref() -> Result<ObjectRef, ObjectError> {
+    Ok(Arc::new(FwObject::Task(TaskObject::new()?)))
+}
+
+pub(crate) fn install_handle_for_ref(
+    object: &ObjectRef,
+    rights: Rights,
+) -> Result<Handle, ObjectError> {
+    Ok(handle::insert(Arc::clone(object), rights)?)
+}
+
+pub(crate) fn task_from_ref(object: &ObjectRef) -> Result<&TaskObject, ObjectError> {
+    match object.as_ref() {
+        FwObject::Task(task) => Ok(task),
+        _ => Err(ObjectError::WrongObjectType),
+    }
 }
 
 pub fn task_info(handle_value: Handle) -> Result<TaskInfo, ObjectError> {

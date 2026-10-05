@@ -196,8 +196,9 @@ pub fn frame_reuse_stats() -> Result<FrameReuseStats, MemoryError> {
 ///
 /// C2b uses this for live task-stack guard pages. Reservations are fixed-size,
 /// allocation-free metadata and are independent of whether a leaf PTE exists.
-/// M3.5-C remains single-CPU; SMP must strengthen reservation coordination
-/// before multiple CPUs can mutate virtual mappings concurrently.
+/// M3.5-C remains single-CPU. The current check-then-claim reservation path
+/// is not sufficient for two CPUs racing to reserve the same address; SMP must
+/// replace or serialize it before multiple CPUs mutate mappings concurrently.
 pub fn reserve_virtual_page(virtual_address: u64) -> Result<(), MemoryError> {
     if virtual_address == 0 || virtual_address % PAGE_SIZE != 0 {
         return Err(if virtual_address % PAGE_SIZE != 0 {
@@ -228,6 +229,13 @@ pub fn reserve_virtual_page(virtual_address: u64) -> Result<(), MemoryError> {
 pub fn release_virtual_page_reservation(
     virtual_address: u64,
 ) -> Result<(), MemoryError> {
+    if virtual_address == 0 {
+        return Err(MemoryError::InvalidVirtualAddress);
+    }
+    if virtual_address % PAGE_SIZE != 0 {
+        return Err(MemoryError::AddressNotAligned);
+    }
+
     for slot in &RESERVED_VIRTUAL_PAGES {
         if slot
             .compare_exchange(virtual_address, 0, Ordering::AcqRel, Ordering::Acquire)

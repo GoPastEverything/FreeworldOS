@@ -81,6 +81,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-task-guard-bios.img
 
+      - name: Build voluntary-switch kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c2c-ci-switch-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-voluntary-switch-bios.img
+
       - name: Validate host debug tools
         shell: bash
         run: |
@@ -280,6 +294,44 @@ jobs:
 
           if grep -Fq "PANIC REENTRY" task-guard-boot-serial.log; then
             echo "guard-page fatal diagnostics recursively panicked" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot voluntary A-to-B switch image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-voluntary-switch-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > voluntary-switch-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat voluntary-switch-serial.log
+
+          grep -Fq "FreeWorldOS: M3.5-C2c scheduler refs: owned handles=closed" voluntary-switch-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2c task A: running task_id=[1-9][0-9]*" voluntary-switch-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2c task B: running task_id=[1-9][0-9]* saved_a_rsp=0xffffa[0-9a-f]+" voluntary-switch-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2c voluntary switch: passed A->B scheduler_refs=owned timer_preemption=off" voluntary-switch-serial.log
+
+          if grep -Fq "KERNEL PANIC" voluntary-switch-serial.log \
+            || grep -Fq "FreeWorldOS: FATAL" voluntary-switch-serial.log \
+            || grep -Fq "FreeWorldOS: EXCEPTION:" voluntary-switch-serial.log; then
+            echo "unexpected panic or exception during C2c voluntary switch proof" >&2
             exit 1
           fi
 

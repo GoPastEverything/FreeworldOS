@@ -19,6 +19,7 @@ m35b-ci-fatal-test = []
 m35c-ci-self-test = []
 m35c-ci-guard-fault-test = []
 m35c2b-ci-self-test = []
+m35c2c-ci-switch-test = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

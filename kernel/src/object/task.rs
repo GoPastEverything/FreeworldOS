@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+};
 
 use crate::memory::{self, PagePermissions, PhysFrame, PAGE_SIZE};
 
@@ -12,6 +15,18 @@ const MAX_TASK_STACK_SLOTS: u64 = 1024;
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_STACK_SLOT: AtomicU64 = AtomicU64::new(0);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SavedRegisterFrame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    rbp: u64,
+    rbx: u64,
+    rip: u64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -49,6 +64,7 @@ pub struct TaskObject {
     id: u64,
     state: AtomicU8,
     saved_stack_pointer_present: AtomicBool,
+    saved_stack_pointer: AtomicU64,
     stack: KernelStack,
 }
 
@@ -64,6 +80,7 @@ impl TaskObject {
             id,
             state: AtomicU8::new(TaskState::Created as u8),
             saved_stack_pointer_present: AtomicBool::new(false),
+            saved_stack_pointer: AtomicU64::new(0),
             stack: KernelStack::new()?,
         })
     }
@@ -85,8 +102,104 @@ impl TaskObject {
             && !self.saved_stack_pointer_present.load(Ordering::Acquire)
     }
 
-    fn state(&self) -> TaskState {
+    pub(crate) fn state(&self) -> TaskState {
         TaskState::from_raw(self.state.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn prepare_initial_context(
+        &self,
+        entry: extern "C" fn() -> !,
+    ) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Created
+            || self.saved_stack_pointer_present.load(Ordering::Acquire)
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        let frame_bytes = size_of::<SavedRegisterFrame>() as u64;
+        assert_eq!(
+            frame_bytes,
+            7 * size_of::<u64>() as u64,
+            "FreeWorld saved register frame layout changed"
+        );
+
+        let entry_rsp = self.stack.initial_stack_pointer();
+        let frame_rsp = entry_rsp
+            .checked_sub(frame_bytes)
+            .ok_or(ObjectError::InvalidTaskState)?;
+
+        assert!(
+            frame_rsp >= self.stack.stack_bottom,
+            "FreeWorld initial saved register frame escaped task stack"
+        );
+
+        let frame = SavedRegisterFrame {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            rbp: 0,
+            rbx: 0,
+            rip: entry as usize as u64,
+        };
+
+        // SAFETY: frame_rsp points into this task's exclusively owned RW/NX
+        // stack and is naturally aligned for the fixed register frame.
+        unsafe {
+            core::ptr::write_volatile(frame_rsp as *mut SavedRegisterFrame, frame);
+            core::ptr::write_volatile(entry_rsp as *mut u64, 0);
+        }
+
+        self.saved_stack_pointer.store(frame_rsp, Ordering::Release);
+        self.saved_stack_pointer_present.store(true, Ordering::Release);
+        self.state.store(TaskState::Runnable as u8, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn begin_running_from_saved(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Runnable
+            || !self.saved_stack_pointer_present.load(Ordering::Acquire)
+            || self.saved_stack_pointer.load(Ordering::Acquire) == 0
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.saved_stack_pointer_present.store(false, Ordering::Release);
+        self.state.store(TaskState::Running as u8, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_running_context_save(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        // The scheduler owns a strong reference before this flag is set. The
+        // assembly switch writes the exact saved RSP immediately afterward.
+        self.saved_stack_pointer_present.store(true, Ordering::Release);
+        self.state.store(TaskState::Runnable as u8, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn saved_stack_pointer(&self) -> u64 {
+        self.saved_stack_pointer.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn saved_stack_pointer_storage(&self) -> *mut u64 {
+        self.saved_stack_pointer.as_ptr()
+    }
+
+    pub(crate) fn saved_stack_pointer_present(&self) -> bool {
+        self.saved_stack_pointer_present.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn saved_stack_pointer_in_stack(&self) -> bool {
+        let rsp = self.saved_stack_pointer();
+        let frame_bytes = size_of::<SavedRegisterFrame>() as u64;
+        rsp >= self.stack.stack_bottom
+            && rsp
+                .checked_add(frame_bytes)
+                .is_some_and(|end| end <= self.stack.initial_stack_pointer())
     }
 
     #[cfg(feature = "m35c2b-ci-self-test")]
