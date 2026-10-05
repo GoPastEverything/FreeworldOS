@@ -86,22 +86,8 @@ __freeworld_apic_timer_entry:
     cld
     call __freeworld_apic_timer_dispatch
 
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rbp
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-    iretq
+    mov rdi, rsp
+    jmp __freeworld_resume_interrupt_context
 
     .global __freeworld_probe_timer_all_gprs
     .type __freeworld_probe_timer_all_gprs,@function
@@ -310,7 +296,7 @@ extern "C" fn __freeworld_apic_timer_dispatch(frame: *mut TimerInterruptFrame) {
     apic::timer_interrupt();
 
     #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
-    if probe_match && crate::rt::scheduler::timer_interrupt_resume_handoff_armed() {
+    if probe_match && crate::rt::scheduler::consume_timer_interrupt_resume_handoff() {
         // Interrupt depth is CPU handler-execution state, not task state.
         // Drop it after EOI and before abandoning A's interrupt-handler stack.
         drop(scope);

@@ -38,7 +38,19 @@ PE and ELF are first-class image formats. Neither format defines the internal pr
 
 Initial CPU implementation target: x86_64.
 
-The architecture is ISA-neutral enough to add ARM64 later. Cross-ISA execution is a separate translation problem and is not part of v0.1.
+### Native foreign-image execution invariant
+
+For a binary whose ISA matches the running machine, PE/COFF and ELF compatibility means direct native execution, not virtualization or CPU emulation.
+
+- the program's compiled instructions execute directly on the processor under FreeWorldOS scheduling;
+- FreeWorldOS maps/relocates the PE or ELF image and resolves its DLL/SO dependencies;
+- Windows/Linux observable OS behavior is supplied by WinFacet/LinuxFacet and FreeWorld-native objects;
+- application-provided matching-ISA DLLs and shared objects execute as native mapped modules;
+- compatibility does not require a guest Windows or Linux kernel.
+
+System-facing compatibility libraries/interfaces are FreeWorldOS clean-room implementations. Proprietary Windows implementation code and copied glibc implementation code are not part of the design.
+
+The architecture is ISA-neutral enough to add ARM64 later. Cross-ISA execution is a separate translation problem and is not part of v0.1. A foreign-ISA binary cannot satisfy the direct-native invariant on a mismatched CPU without a separately designed translation layer.
 
 ---
 

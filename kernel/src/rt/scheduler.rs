@@ -730,7 +730,10 @@ extern "C" fn task_interrupt_resume_a_entry() -> ! {
     }
 
     assert!(all_gprs_ok, "C2g IRETQ resume changed a general-purpose register");
-    assert!(C2G_CAPTURED.load(Ordering::Acquire));
+    assert!(
+        !C2G_CAPTURED.load(Ordering::Acquire),
+        "C2h one-shot handoff flag was not consumed"
+    );
     assert!(C2G_B_RAN.load(Ordering::Acquire));
     assert!(C2G_RESUME_ISSUED.load(Ordering::Acquire));
     assert!(C2G_PROBE_HITS.load(Ordering::Acquire) >= 1);
@@ -743,7 +746,7 @@ extern "C" fn task_interrupt_resume_a_entry() -> ! {
     assert!(arch::interrupts_enabled());
 
     crate::arch::serial::write_fmt(format_args!(
-        "FreeWorldOS: M3.5-C2g interrupt resume: frame={:#x} kind=interrupt saved_on=A B_observed=ok eoi_before_handoff=ok depth_before_handoff=clear resume_path=iretq all_gprs=ok if_restored=ok\n",
+        "FreeWorldOS: M3.5-C2g interrupt resume: frame={:#x} kind=interrupt saved_on=A B_observed=ok eoi_before_handoff=ok depth_before_handoff=clear resume_path=iretq all_gprs=ok if_restored=ok handoff_one_shot=ok shared_iretq_tail=ok\n",
         C2G_FRAME_ADDRESS.load(Ordering::Acquire),
     ));
     crate::arch::serial::println(
@@ -842,8 +845,8 @@ pub(crate) fn timer_interrupt_frame_capture_for_resume(
 }
 
 #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
-pub(crate) fn timer_interrupt_resume_handoff_armed() -> bool {
-    C2G_CAPTURED.load(Ordering::Acquire)
+pub(crate) fn consume_timer_interrupt_resume_handoff() -> bool {
+    C2G_CAPTURED.swap(false, Ordering::AcqRel)
 }
 
 #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
