@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -66,6 +66,20 @@ jobs:
           )"
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-fatal-bios.img
+
+      - name: Build task guard-fault kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c-ci-guard-fault-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-task-guard-bios.img
 
       - name: Validate host debug tools
         shell: bash
@@ -131,6 +145,8 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5a.frame_reuse" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.object" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5b.event_ring" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5c.task_stack" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C task-stack self-test: passed object=ok stack_writable=ok stack_pages=4 returned_frames=4" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0300 " selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
@@ -225,6 +241,43 @@ jobs:
 
           if grep -Fq "PANIC REENTRY" fatal-boot-serial.log; then
             echo "fatal diagnostics recursively panicked" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot deliberate task guard-fault image and verify #PF
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-task-guard-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > task-guard-boot-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat task-guard-boot-serial.log
+
+          grep -Fq "FreeWorldOS: M3.5-C guard fault test:" task-guard-boot-serial.log
+          grep -Fq "guard=0x100000000000" task-guard-boot-serial.log
+          grep -Fq "FreeWorldOS: FATAL" task-guard-boot-serial.log
+          grep -Fq "FreeWorldOS: EXCEPTION: #PF page fault" task-guard-boot-serial.log
+          grep -Fq "fault=0x100000000000" task-guard-boot-serial.log
+
+          if grep -Fq "PANIC REENTRY" task-guard-boot-serial.log; then
+            echo "guard-page fatal diagnostics recursively panicked" >&2
             exit 1
           fi
 

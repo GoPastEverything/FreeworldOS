@@ -68,8 +68,8 @@ docs/
 - **M2:** ✅ PIC/APIC bring-up, uncached LAPIC mapping, PIT calibration, first `sti`, periodic tick delivery, and generic `rt::time` hook
 - **M3:** ✅ deterministic kernel heap + native object + generational handles + rights attenuation + close/reclamation proof
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
-- **M3.5-B:** ◐ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests on branch
-- **M3.5-C:** task stacks + saved context + deterministic scheduler/context switching
+- **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
+- **M3.5-C:** ◐ task object + recycler-backed guarded kernel stack first; saved context and deterministic voluntary switching follow
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
@@ -77,4 +77,4 @@ docs/
 - **M8:** FW_MODULE loader and Bridge ABI v1
 - **M9:** RegCube transactional state core and WinFacet registry projection
 
-See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline and `docs/milestones/` for the frozen M1–M3.5-A proofs and current M3.5-B debugging-foundation proof.
+See `docs/architecture/CANDIDATE-v0.1.md` for the current design baseline and `docs/milestones/` for the frozen M1–M3.5-B proofs and current M3.5-C task-stack work.
