@@ -30,6 +30,25 @@ struct SavedRegisterFrame {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
+pub enum SavedContextKind {
+    None = 0,
+    Voluntary = 1,
+    Interrupt = 2,
+}
+
+impl SavedContextKind {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::Voluntary,
+            2 => Self::Interrupt,
+            _ => panic!("FreeWorld saved context kind corrupt: {value}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum TaskState {
     Created = 0,
     Runnable = 1,
@@ -65,6 +84,8 @@ pub struct TaskObject {
     state: AtomicU8,
     saved_stack_pointer_present: AtomicBool,
     saved_stack_pointer: AtomicU64,
+    saved_context_kind: AtomicU8,
+    saved_context_bytes: AtomicU64,
     stack: KernelStack,
 }
 
@@ -81,6 +102,8 @@ impl TaskObject {
             state: AtomicU8::new(TaskState::Created as u8),
             saved_stack_pointer_present: AtomicBool::new(false),
             saved_stack_pointer: AtomicU64::new(0),
+            saved_context_kind: AtomicU8::new(SavedContextKind::None as u8),
+            saved_context_bytes: AtomicU64::new(0),
             stack: KernelStack::new()?,
         })
     }
@@ -151,6 +174,9 @@ impl TaskObject {
         }
 
         self.saved_stack_pointer.store(frame_rsp, Ordering::Release);
+        self.saved_context_bytes.store(frame_bytes, Ordering::Release);
+        self.saved_context_kind
+            .store(SavedContextKind::Voluntary as u8, Ordering::Release);
         self.saved_stack_pointer_present.store(true, Ordering::Release);
         self.state.store(TaskState::Runnable as u8, Ordering::Release);
         Ok(())
@@ -160,11 +186,15 @@ impl TaskObject {
         if self.state() != TaskState::Runnable
             || !self.saved_stack_pointer_present.load(Ordering::Acquire)
             || self.saved_stack_pointer.load(Ordering::Acquire) == 0
+            || self.saved_context_kind() != SavedContextKind::Voluntary
         {
             return Err(ObjectError::InvalidTaskState);
         }
 
         self.saved_stack_pointer_present.store(false, Ordering::Release);
+        self.saved_context_kind
+            .store(SavedContextKind::None as u8, Ordering::Release);
+        self.saved_context_bytes.store(0, Ordering::Release);
         self.state.store(TaskState::Running as u8, Ordering::Release);
         Ok(())
     }
@@ -176,6 +206,10 @@ impl TaskObject {
 
         // The scheduler owns a strong reference before this flag is set. The
         // assembly switch writes the exact saved RSP immediately afterward.
+        self.saved_context_bytes
+            .store(size_of::<SavedRegisterFrame>() as u64, Ordering::Release);
+        self.saved_context_kind
+            .store(SavedContextKind::Voluntary as u8, Ordering::Release);
         self.saved_stack_pointer_present.store(true, Ordering::Release);
         self.state.store(TaskState::Runnable as u8, Ordering::Release);
         Ok(())
@@ -193,13 +227,64 @@ impl TaskObject {
         self.saved_stack_pointer_present.load(Ordering::Acquire)
     }
 
+    pub(crate) fn saved_context_kind(&self) -> SavedContextKind {
+        SavedContextKind::from_raw(self.saved_context_kind.load(Ordering::Acquire))
+    }
+
     pub(crate) fn saved_stack_pointer_in_stack(&self) -> bool {
+        if !self.saved_stack_pointer_present() {
+            return false;
+        }
+
         let rsp = self.saved_stack_pointer();
-        let frame_bytes = size_of::<SavedRegisterFrame>() as u64;
-        rsp >= self.stack.stack_bottom
+        let frame_bytes = self.saved_context_bytes.load(Ordering::Acquire);
+        self.context_range_in_stack(rsp, frame_bytes)
+    }
+
+    pub(crate) fn observe_interrupt_context(
+        &self,
+        frame_rsp: u64,
+        frame_bytes: u64,
+    ) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running
+            || self.saved_stack_pointer_present()
+            || self.saved_context_kind() != SavedContextKind::None
+            || frame_bytes == 0
+            || !self.context_range_in_stack(frame_rsp, frame_bytes)
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.saved_stack_pointer.store(frame_rsp, Ordering::Release);
+        self.saved_context_bytes.store(frame_bytes, Ordering::Release);
+        self.saved_context_kind
+            .store(SavedContextKind::Interrupt as u8, Ordering::Release);
+        self.saved_stack_pointer_present.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn finish_same_task_interrupt_context(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running
+            || !self.saved_stack_pointer_present()
+            || self.saved_context_kind() != SavedContextKind::Interrupt
+            || !self.saved_stack_pointer_in_stack()
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.saved_stack_pointer_present.store(false, Ordering::Release);
+        self.saved_context_kind
+            .store(SavedContextKind::None as u8, Ordering::Release);
+        self.saved_context_bytes.store(0, Ordering::Release);
+        Ok(())
+    }
+
+    fn context_range_in_stack(&self, rsp: u64, frame_bytes: u64) -> bool {
+        frame_bytes != 0
+            && rsp >= self.stack.stack_bottom
             && rsp
                 .checked_add(frame_bytes)
-                .is_some_and(|end| end <= self.stack.initial_stack_pointer())
+                .is_some_and(|end| end <= self.stack.stack_top)
     }
 
     #[cfg(feature = "m35c2b-ci-self-test")]

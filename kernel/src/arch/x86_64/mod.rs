@@ -4,6 +4,7 @@ mod gdt;
 mod interrupt_context;
 mod pic;
 mod pit;
+mod timer_entry;
 pub mod exceptions;
 pub mod interrupt_controller;
 pub mod memory;
@@ -42,6 +43,11 @@ pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
 
 pub unsafe fn start_first_task(new_rsp: u64) -> ! {
     unsafe { context_switch::start_first_task(new_rsp) }
+}
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+pub unsafe fn probe_timer_callee_saved_once() -> bool {
+    unsafe { timer_entry::probe_timer_callee_saved_once() }
 }
 
 pub fn in_interrupt() -> bool {
