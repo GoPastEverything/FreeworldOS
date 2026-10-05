@@ -1,0 +1,257 @@
+use alloc::sync::Arc;
+use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+};
+
+use crate::{
+    arch,
+    object::{
+        self,
+        handle::Rights,
+        task::{TaskObject, TaskState},
+        FwObject, ObjectRef,
+    },
+};
+
+const CURRENT_NONE: u8 = 0;
+const CURRENT_A: u8 = 1;
+const CURRENT_B: u8 = 2;
+
+struct SchedulerState {
+    task_a: ObjectRef,
+    task_b: ObjectRef,
+    current: AtomicU8,
+}
+
+impl SchedulerState {
+    fn task_a(&self) -> &TaskObject {
+        object::task_from_ref(&self.task_a)
+            .expect("FreeWorld scheduler task A reference changed type")
+    }
+
+    fn task_b(&self) -> &TaskObject {
+        object::task_from_ref(&self.task_b)
+            .expect("FreeWorld scheduler task B reference changed type")
+    }
+}
+
+struct SchedulerStorage(UnsafeCell<MaybeUninit<SchedulerState>>);
+
+// SAFETY: C2c is bootstrap-CPU-only. The scheduler object references are
+// written once before publication and never replaced. Runtime mutation is
+// limited to atomics inside SchedulerState/TaskObject. SMP scheduling is not
+// enabled by this milestone.
+unsafe impl Sync for SchedulerStorage {}
+
+static SCHEDULER: SchedulerStorage =
+    SchedulerStorage(UnsafeCell::new(MaybeUninit::uninit()));
+static SCHEDULER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+fn install(task_a: ObjectRef, task_b: ObjectRef) {
+    assert!(
+        !SCHEDULER_INITIALIZED.load(Ordering::Acquire),
+        "FreeWorld C2c scheduler installed twice"
+    );
+
+    // SAFETY: Single bootstrap CPU, one initialization before publication.
+    unsafe {
+        (*SCHEDULER.0.get()).write(SchedulerState {
+            task_a,
+            task_b,
+            current: AtomicU8::new(CURRENT_NONE),
+        });
+    }
+
+    SCHEDULER_INITIALIZED.store(true, Ordering::Release);
+}
+
+fn scheduler() -> &'static SchedulerState {
+    assert!(
+        SCHEDULER_INITIALIZED.load(Ordering::Acquire),
+        "FreeWorld scheduler used before initialization"
+    );
+
+    // SAFETY: Acquire observed one-time publication. C2c never removes or
+    // replaces this state.
+    unsafe { &*(*SCHEDULER.0.get()).as_ptr() }
+}
+
+#[cfg(feature = "m35c2c-ci-switch-test")]
+pub fn ci_voluntary_switch_test() -> ! {
+    let task_a_ref = object::create_task_ref()
+        .expect("C2c failed to create scheduler-owned task A");
+    let task_b_ref = object::create_task_ref()
+        .expect("C2c failed to create scheduler-owned task B");
+
+    // Give each task a temporary handle, then close it while the task is still
+    // Created. The Arc moved into the scheduler is therefore the lifetime
+    // owner once execution begins; runnable stack lifetime does not depend on
+    // handle-table behavior.
+    let task_a_handle = object::install_handle_for_ref(&task_a_ref, Rights::READ)
+        .expect("C2c failed to install task A handle");
+    let task_b_handle = object::install_handle_for_ref(&task_b_ref, Rights::READ)
+        .expect("C2c failed to install task B handle");
+
+    object::close(task_a_handle).expect("C2c failed to close task A bootstrap handle");
+    object::close(task_b_handle).expect("C2c failed to close task B bootstrap handle");
+
+    object::task_from_ref(&task_a_ref)
+        .expect("C2c task A reference changed type")
+        .prepare_initial_context(task_a_entry)
+        .expect("C2c failed to prepare task A saved frame");
+    object::task_from_ref(&task_b_ref)
+        .expect("C2c task B reference changed type")
+        .prepare_initial_context(task_b_entry)
+        .expect("C2c failed to prepare task B saved frame");
+
+    install(task_a_ref, task_b_ref);
+
+    let state = scheduler();
+    assert_eq!(
+        Arc::strong_count(&state.task_a),
+        1,
+        "C2c task A has an unexpected owner outside the scheduler"
+    );
+    assert_eq!(
+        Arc::strong_count(&state.task_b),
+        1,
+        "C2c task B has an unexpected owner outside the scheduler"
+    );
+
+    let task_a = state.task_a();
+    task_a
+        .begin_running_from_saved()
+        .expect("C2c task A could not transition Runnable -> Running");
+    state.current.store(CURRENT_A, Ordering::Release);
+
+    let first_rsp = task_a.saved_stack_pointer();
+    assert!(
+        task_a.saved_stack_pointer_in_stack(),
+        "C2c task A initial saved RSP is outside its stack"
+    );
+
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2c scheduler refs: owned handles=closed",
+    );
+
+    // SAFETY: task A is Running, the scheduler owns its sole strong reference,
+    // and first_rsp points at the validated initial SavedRegisterFrame.
+    unsafe { arch::start_first_task(first_rsp) }
+}
+
+#[cfg(feature = "m35c2c-ci-switch-test")]
+extern "C" fn task_a_entry() -> ! {
+    let state = scheduler();
+    let task_a = state.task_a();
+
+    assert_eq!(
+        state.current.load(Ordering::Acquire),
+        CURRENT_A,
+        "C2c entered task A while scheduler current != A"
+    );
+    assert_eq!(
+        task_a.state(),
+        TaskState::Running,
+        "C2c task A did not enter Running state"
+    );
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2c task A: running task_id={}\n",
+        task_a.info().id,
+    ));
+
+    yield_a_to_b()
+}
+
+#[cfg(feature = "m35c2c-ci-switch-test")]
+fn yield_a_to_b() -> ! {
+    let state = scheduler();
+    let task_a = state.task_a();
+    let task_b = state.task_b();
+
+    assert_eq!(
+        state.current.load(Ordering::Acquire),
+        CURRENT_A,
+        "C2c yield requested when task A was not current"
+    );
+
+    task_a
+        .prepare_running_context_save()
+        .expect("C2c task A could not prepare Running -> Runnable save");
+    task_b
+        .begin_running_from_saved()
+        .expect("C2c task B could not transition Runnable -> Running");
+
+    let new_rsp = task_b.saved_stack_pointer();
+    assert!(
+        task_b.saved_stack_pointer_in_stack(),
+        "C2c task B saved RSP is outside its stack"
+    );
+
+    state.current.store(CURRENT_B, Ordering::Release);
+
+    // SAFETY: The scheduler owns both task references. task A's storage is
+    // writable and its stack remains live; task B has a validated saved frame.
+    unsafe {
+        arch::switch_task_context(
+            task_a.saved_stack_pointer_storage(),
+            new_rsp,
+        );
+    }
+
+    panic!("C2c task A resumed after the one-way A -> B proof");
+}
+
+#[cfg(feature = "m35c2c-ci-switch-test")]
+extern "C" fn task_b_entry() -> ! {
+    let state = scheduler();
+    let task_a = state.task_a();
+    let task_b = state.task_b();
+
+    assert_eq!(
+        state.current.load(Ordering::Acquire),
+        CURRENT_B,
+        "C2c entered task B while scheduler current != B"
+    );
+    assert_eq!(
+        task_a.state(),
+        TaskState::Runnable,
+        "C2c task A was not Runnable after yielding"
+    );
+    assert_eq!(
+        task_b.state(),
+        TaskState::Running,
+        "C2c task B did not enter Running state"
+    );
+    assert!(
+        task_a.saved_stack_pointer_present(),
+        "C2c task A did not publish saved stack state"
+    );
+    assert!(
+        task_a.saved_stack_pointer_in_stack(),
+        "C2c task A switch-saved RSP is outside its stack"
+    );
+    assert_eq!(
+        Arc::strong_count(&state.task_a),
+        1,
+        "C2c scheduler lost sole lifetime ownership of task A"
+    );
+    assert_eq!(
+        Arc::strong_count(&state.task_b),
+        1,
+        "C2c scheduler lost sole lifetime ownership of task B"
+    );
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2c task B: running task_id={} saved_a_rsp={:#x}\n",
+        task_b.info().id,
+        task_a.saved_stack_pointer(),
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2c voluntary switch: passed A->B scheduler_refs=owned timer_preemption=off",
+    );
+
+    arch::halt_loop()
+}

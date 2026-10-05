@@ -1,4 +1,5 @@
 mod apic;
+mod context_switch;
 mod gdt;
 mod interrupt_context;
 mod pic;
@@ -29,6 +30,14 @@ pub fn timer_period_ns() -> Option<u64> {
 
 pub fn disable_interrupts() {
     interrupts::disable();
+}
+
+pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
+    unsafe { context_switch::switch_task_context(old_rsp, new_rsp) }
+}
+
+pub unsafe fn start_first_task(new_rsp: u64) -> ! {
+    unsafe { context_switch::start_first_task(new_rsp) }
 }
 
 pub fn in_interrupt() -> bool {

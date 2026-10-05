@@ -144,6 +144,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m35c2c-ci-switch-test")]
+    {
+        rt::scheduler::ci_voluntary_switch_test();
+    }
+
     #[cfg(feature = "m35c-ci-guard-fault-test")]
     {
         object::task_guard_fault_ci_test();
