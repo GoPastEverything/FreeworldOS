@@ -12,6 +12,7 @@ path = "src/main.rs"
 default = []
 m1-ci-self-test = []
 m3-ci-self-test = []
+m35a-ci-self-test = []
 
 [dependencies]
 bootloader_api = "=0.11.17"
