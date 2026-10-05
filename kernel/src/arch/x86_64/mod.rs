@@ -32,6 +32,10 @@ pub fn disable_interrupts() {
     interrupts::disable();
 }
 
+pub fn interrupts_enabled() -> bool {
+    interrupts::are_enabled()
+}
+
 pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
     unsafe { context_switch::switch_task_context(old_rsp, new_rsp) }
 }

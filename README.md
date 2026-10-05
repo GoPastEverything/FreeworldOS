@@ -69,7 +69,7 @@ docs/
 - **M3:** ✅ deterministic kernel heap + native object + generational handles + rights attenuation + close/reclamation proof
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
-- **M3.5-C:** ◐ C1/C2a/C2b merged; C2c proves scheduler-owned task lifetime plus one explicit saved-context A→B voluntary switch; timer preemption remains off
+- **M3.5-C:** ◐ C1–C2c merged; C2d closes the interruptible-switch window and proves an explicit A→B→A cooperative round trip; timer preemption remains off
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
