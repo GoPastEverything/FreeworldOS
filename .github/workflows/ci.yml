@@ -137,6 +137,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-timer-trap-frame-bios.img
 
+      - name: Build interrupt-frame resume kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c2g-ci-resume-interrupt-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-interrupt-resume-bios.img
+
       - name: Validate host debug tools
         shell: bash
         run: |
@@ -492,6 +506,45 @@ jobs:
             || grep -Fq "FreeWorldOS: FATAL" timer-trap-frame-serial.log \
             || grep -Fq "FreeWorldOS: EXCEPTION:" timer-trap-frame-serial.log; then
             echo "unexpected panic or exception during C2f timer-frame proof" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot saved Interrupt-frame resume proof
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-interrupt-resume-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > interrupt-resume-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat interrupt-resume-serial.log
+
+          grep -Fq "FreeWorldOS: M3.5-C2g interrupt resume: starting capture->B->iretq(A) proof" interrupt-resume-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2g task B: observed A Interrupt frame after EOI/depth teardown" interrupt-resume-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2g interrupt resume: frame=0xffffa[0-9a-f]+ kind=interrupt saved_on=A B_observed=ok eoi_before_handoff=ok depth_before_handoff=clear resume_path=iretq all_gprs=ok if_restored=ok" interrupt-resume-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2g resume proof: passed fixed_handoff=A->B explicit_resume=B->A timer_selection=off" interrupt-resume-serial.log
+
+          if grep -Fq "KERNEL PANIC" interrupt-resume-serial.log \
+            || grep -Fq "PANIC REENTRY" interrupt-resume-serial.log \
+            || grep -Fq "FreeWorldOS: FATAL" interrupt-resume-serial.log \
+            || grep -Fq "FreeWorldOS: EXCEPTION:" interrupt-resume-serial.log; then
+            echo "unexpected panic or exception during C2g Interrupt-frame resume proof" >&2
             exit 1
           fi
 

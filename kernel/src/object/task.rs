@@ -263,6 +263,48 @@ impl TaskObject {
         Ok(())
     }
 
+    pub(crate) fn park_interrupt_context(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running
+            || !self.saved_stack_pointer_present()
+            || self.saved_context_kind() != SavedContextKind::Interrupt
+            || !self.saved_stack_pointer_in_stack()
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.state.store(TaskState::Runnable as u8, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn begin_running_from_interrupt(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Runnable
+            || !self.saved_stack_pointer_present()
+            || self.saved_context_kind() != SavedContextKind::Interrupt
+            || !self.saved_stack_pointer_in_stack()
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.saved_stack_pointer_present.store(false, Ordering::Release);
+        self.saved_context_kind
+            .store(SavedContextKind::None as u8, Ordering::Release);
+        self.saved_context_bytes.store(0, Ordering::Release);
+        self.state.store(TaskState::Running as u8, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn stop_running_without_saved_context(&self) -> Result<(), ObjectError> {
+        if self.state() != TaskState::Running
+            || self.saved_stack_pointer_present()
+            || self.saved_context_kind() != SavedContextKind::None
+        {
+            return Err(ObjectError::InvalidTaskState);
+        }
+
+        self.state.store(TaskState::Stopped as u8, Ordering::Release);
+        Ok(())
+    }
+
     pub(crate) fn finish_same_task_interrupt_context(&self) -> Result<(), ObjectError> {
         if self.state() != TaskState::Running
             || !self.saved_stack_pointer_present()
