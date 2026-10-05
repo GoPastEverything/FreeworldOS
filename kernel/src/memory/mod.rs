@@ -143,6 +143,8 @@ pub enum MemoryError {
     AddressNotAligned,
     InvalidPhysicalFrame,
     FrameNotAllocatorOwned,
+    FrameReservedByAllocator,
+    FrameStateBitmapTooLarge,
     OutOfFrames,
     PageAlreadyMapped,
     PageNotMapped,
@@ -179,6 +181,11 @@ pub unsafe fn free_frame(frame: PhysFrame) -> Result<(), MemoryError> {
 
 pub fn frame_reuse_stats() -> Result<FrameReuseStats, MemoryError> {
     crate::arch::memory::frame_reuse_stats()
+}
+
+#[cfg(feature = "m35a-ci-self-test")]
+fn frame_is_allocated_for_test(frame: PhysFrame) -> Result<bool, MemoryError> {
+    crate::arch::memory::frame_is_allocated_for_test(frame)
 }
 
 /// Maps a single 4 KiB page.
@@ -282,6 +289,10 @@ pub fn frame_reuse_ci_self_test() -> Result<(), MemoryError> {
     }
 
     let frame = allocate_frame()?;
+    if !frame_is_allocated_for_test(frame)? {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
     let permissions = PagePermissions::read_write();
 
     let mut mapped_address = None;
@@ -311,6 +322,10 @@ pub fn frame_reuse_ci_self_test() -> Result<(), MemoryError> {
     // frame exclusively, and no device/DMA consumer was ever given the frame.
     unsafe { free_frame(unmapped)? };
 
+    if frame_is_allocated_for_test(frame)? {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
+
     let after_free = frame_reuse_stats()?;
     if after_free.available != before.available + 1
         || after_free.returned_total != before.returned_total + 1
@@ -320,7 +335,7 @@ pub fn frame_reuse_ci_self_test() -> Result<(), MemoryError> {
     }
 
     let reused = allocate_frame()?;
-    if reused != frame {
+    if reused != frame || !frame_is_allocated_for_test(reused)? {
         return Err(MemoryError::SelfTestFrameMismatch);
     }
 
@@ -353,6 +368,10 @@ pub fn frame_reuse_ci_self_test() -> Result<(), MemoryError> {
     // Leave the successfully-tested frame in the recycler so later bootstrap
     // allocations can consume it instead of leaking the self-test frame.
     unsafe { free_frame(returned_again)? };
+
+    if frame_is_allocated_for_test(returned_again)? {
+        return Err(MemoryError::SelfTestFrameMismatch);
+    }
 
     Ok(())
 }

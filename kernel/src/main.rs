@@ -57,7 +57,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let stats = memory::frame_reuse_stats()
             .expect("M3.5-A frame reuse stats unavailable after self-test");
         arch::serial::write_fmt(format_args!(
-            "FreeWorldOS: M3.5-A frame reuse self-test: passed available={} returned_total={} reused_total={}\n",
+            "FreeWorldOS: M3.5-A frame reuse self-test: passed bitmap_state=ok available={} returned_total={} reused_total={}\n",
             stats.available,
             stats.returned_total,
             stats.reused_total,

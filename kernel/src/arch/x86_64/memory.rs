@@ -80,6 +80,26 @@ impl ReservedRange {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FrameStateBitmap {
+    physical_start: u64,
+    byte_len: usize,
+    page_count: usize,
+    tracked_frames: u64,
+}
+
+impl FrameStateBitmap {
+    fn physical_end(self) -> u64 {
+        self.physical_start
+            .checked_add(self.page_count as u64 * PAGE_SIZE)
+            .expect("FreeWorld frame-state bitmap range overflow")
+    }
+
+    fn contains_frame(self, frame_start: u64) -> bool {
+        frame_start >= self.physical_start && frame_start < self.physical_end()
+    }
+}
+
 struct BootFrameAllocator {
     regions: &'static [MemoryRegion],
     region_index: usize,
@@ -91,6 +111,7 @@ struct BootFrameAllocator {
     recycled_available: usize,
     recycled_total: u64,
     returned_total: u64,
+    frame_state: Option<FrameStateBitmap>,
 }
 
 impl BootFrameAllocator {
@@ -99,8 +120,8 @@ impl BootFrameAllocator {
         kernel: ReservedRange,
         ramdisk: Option<ReservedRange>,
         physical_memory_offset: u64,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, MemoryError> {
+        let mut allocator = Self {
             regions,
             region_index: 0,
             next_address: MIN_ALLOCATABLE_PHYS,
@@ -111,15 +132,148 @@ impl BootFrameAllocator {
             recycled_available: 0,
             recycled_total: 0,
             returned_total: 0,
+            frame_state: None,
+        };
+
+        allocator.initialize_frame_state_bitmap()?;
+        Ok(allocator)
+    }
+
+    fn initialize_frame_state_bitmap(&mut self) -> Result<(), MemoryError> {
+        let tracked_end = self
+            .regions
+            .iter()
+            .filter(|region| region.kind == MemoryRegionKind::Usable)
+            .map(|region| region.end)
+            .max()
+            .ok_or(MemoryError::OutOfFrames)?;
+
+        let tracked_frames = tracked_end.div_ceil(PAGE_SIZE);
+        let bitmap_bytes_u64 = tracked_frames.div_ceil(8);
+        let bitmap_bytes = usize::try_from(bitmap_bytes_u64)
+            .map_err(|_| MemoryError::FrameStateBitmapTooLarge)?;
+        let bitmap_pages = bitmap_bytes
+            .max(1)
+            .div_ceil(PAGE_SIZE as usize);
+
+        let physical_start = self
+            .reserve_contiguous_fresh_pages(bitmap_pages)
+            .ok_or(MemoryError::OutOfFrames)?;
+
+        let bitmap = FrameStateBitmap {
+            physical_start,
+            byte_len: bitmap_bytes,
+            page_count: bitmap_pages,
+            tracked_frames,
+        };
+
+        let pointer = self.direct_map_pointer(physical_start);
+        unsafe {
+            core::ptr::write_bytes(
+                pointer,
+                0,
+                bitmap_pages * PAGE_SIZE as usize,
+            );
+        }
+
+        self.frame_state = Some(bitmap);
+        self.mark_bootstrap_consumed_frames();
+
+        Ok(())
+    }
+
+    fn mark_bootstrap_consumed_frames(&mut self) {
+        for index in 0..self.regions.len() {
+            let (is_usable, region_start, region_end) = {
+                let region = &self.regions[index];
+                (
+                    region.kind == MemoryRegionKind::Usable,
+                    region.start,
+                    region.end,
+                )
+            };
+
+            if !is_usable || index > self.region_index {
+                continue;
+            }
+
+            let mut frame_start = align_up(
+                region_start.max(MIN_ALLOCATABLE_PHYS),
+                PAGE_SIZE,
+            );
+            let reached_end = if index < self.region_index {
+                region_end
+            } else {
+                self.next_address.min(region_end)
+            };
+
+            while frame_start
+                .checked_add(PAGE_SIZE)
+                .is_some_and(|frame_end| frame_end <= reached_end)
+            {
+                let frame_end = frame_start + PAGE_SIZE;
+
+                if self.reserved_overlap(frame_start, frame_end).is_none()
+                    && !self.is_frame_allocated(frame_start)
+                {
+                    self.mark_frame_allocated(frame_start);
+                }
+
+                frame_start = frame_end;
+            }
+        }
+    }
+
+    fn reserve_contiguous_fresh_pages(&mut self, pages: usize) -> Option<u64> {
+        let byte_len = (pages as u64).checked_mul(PAGE_SIZE)?;
+
+        loop {
+            let region = self.regions.get(self.region_index)?;
+
+            if region.kind != MemoryRegionKind::Usable {
+                self.advance_region();
+                continue;
+            }
+
+            let region_start = region.start.max(MIN_ALLOCATABLE_PHYS);
+            let start = align_up(region_start, PAGE_SIZE);
+            if self.next_address < start {
+                self.next_address = start;
+            }
+
+            let candidate = self.next_address;
+            let end = candidate.checked_add(byte_len)?;
+
+            if end > region.end {
+                self.advance_region();
+                continue;
+            }
+
+            if let Some(reserved) = self.reserved_overlap(candidate, end) {
+                self.next_address = align_up(reserved.end, PAGE_SIZE);
+                continue;
+            }
+
+            self.next_address = end;
+            return Some(candidate);
         }
     }
 
     fn next_frame(&mut self) -> Option<X86PhysFrame<Size4KiB>> {
-        if let Some(frame) = self.pop_recycled_frame() {
-            return Some(frame);
-        }
+        assert_eq!(
+            self.recycled_head.is_some(),
+            self.recycled_available != 0,
+            "FreeWorld frame recycler corrupt: head/count disagree"
+        );
 
-        self.next_fresh_frame()
+        let frame = if self.recycled_head.is_some() {
+            self.pop_recycled_frame()?
+        } else {
+            self.next_fresh_frame()?
+        };
+
+        self.mark_frame_allocated(frame.start_address().as_u64());
+        Some(frame)
     }
 
     fn next_fresh_frame(&mut self) -> Option<X86PhysFrame<Size4KiB>> {
@@ -159,21 +313,45 @@ impl BootFrameAllocator {
         let frame_start = self.recycled_head?;
 
         assert!(
-            self.recycled_available != 0,
-            "FreeWorld frame recycler corrupt: head present with zero count"
+            self.is_managed_frame(frame_start),
+            "FreeWorld frame recycler corrupt: head was never allocator-managed"
         );
         assert!(
-            self.was_issued_by_monotonic_allocator(frame_start),
-            "FreeWorld frame recycler corrupt: head was never allocator-owned"
+            !self.is_frame_allocated(frame_start),
+            "FreeWorld frame recycler corrupt: free-list head is marked allocated"
+        );
+        assert!(
+            !self.is_allocator_metadata_frame(frame_start),
+            "FreeWorld frame recycler corrupt: metadata frame entered free list"
         );
 
         let pointer = self.direct_map_pointer(frame_start);
         let next = unsafe { (pointer as *const u64).read() };
 
+        if self.recycled_available == 1 {
+            assert!(
+                next == 0,
+                "FreeWorld frame recycler corrupt: final entry has a next link"
+            );
+        } else {
+            assert!(
+                next != 0,
+                "FreeWorld frame recycler corrupt: list ended before count"
+            );
+        }
+
         if next != 0 {
             assert!(
-                self.was_issued_by_monotonic_allocator(next),
-                "FreeWorld frame recycler corrupt: next link was never allocator-owned"
+                self.is_managed_frame(next),
+                "FreeWorld frame recycler corrupt: next link was never allocator-managed"
+            );
+            assert!(
+                !self.is_frame_allocated(next),
+                "FreeWorld frame recycler corrupt: next link points at allocated frame"
+            );
+            assert!(
+                !self.is_allocator_metadata_frame(next),
+                "FreeWorld frame recycler corrupt: next link points at metadata"
             );
         }
 
@@ -201,15 +379,41 @@ impl BootFrameAllocator {
             return Err(MemoryError::AddressNotAligned);
         }
 
-        if !self.was_issued_by_monotonic_allocator(frame.start) {
+        if !self.is_managed_frame(frame.start) {
             return Err(MemoryError::FrameNotAllocatorOwned);
         }
 
-        #[cfg(debug_assertions)]
-        self.debug_assert_not_recycled(frame.start);
+        if self.is_allocator_metadata_frame(frame.start) {
+            return Err(MemoryError::FrameReservedByAllocator);
+        }
 
-        // SAFETY CONTRACT: the caller has surrendered all mappings/references
-        // to this frame. Scrub the whole page before storing the intrusive
+        assert!(
+            self.is_frame_allocated(frame.start),
+            "FreeWorld physical frame double free or invalid return: {:#x}",
+            frame.start
+        );
+
+        match self.recycled_head {
+            Some(head) => {
+                assert!(
+                    self.recycled_available != 0,
+                    "FreeWorld frame recycler corrupt: head present with zero count"
+                );
+                assert!(
+                    self.is_managed_frame(head) && !self.is_frame_allocated(head),
+                    "FreeWorld frame recycler corrupt: existing head is not free"
+                );
+            }
+            None => {
+                assert!(
+                    self.recycled_available == 0,
+                    "FreeWorld frame recycler corrupt: count present without head"
+                );
+            }
+        }
+
+        // SAFETY CONTRACT: the caller has surrendered all owner-visible
+        // mappings/references to this frame. Scrub before storing the intrusive
         // free-stack link so stale contents cannot cross ownership boundaries.
         let pointer = self.direct_map_pointer(frame.start);
         unsafe {
@@ -217,6 +421,7 @@ impl BootFrameAllocator {
             (pointer as *mut u64).write(self.recycled_head.unwrap_or(0));
         }
 
+        self.mark_frame_free(frame.start);
         self.recycled_head = Some(frame.start);
         self.recycled_available = self
             .recycled_available
@@ -227,37 +432,6 @@ impl BootFrameAllocator {
             .checked_add(1)
             .expect("FreeWorld frame recycler return counter overflow");
         Ok(())
-    }
-
-    #[cfg(debug_assertions)]
-    fn debug_assert_not_recycled(&self, frame_start: u64) {
-        let mut current = self.recycled_head;
-        let mut remaining = self.recycled_available;
-
-        while let Some(start) = current {
-            assert!(
-                remaining != 0,
-                "FreeWorld frame recycler corrupt: list longer than count"
-            );
-            assert!(
-                start != frame_start,
-                "FreeWorld physical frame double free: {frame_start:#x}"
-            );
-            assert!(
-                self.was_issued_by_monotonic_allocator(start),
-                "FreeWorld frame recycler corrupt: list contains non-owned frame"
-            );
-
-            let pointer = self.direct_map_pointer(start);
-            let next = unsafe { (pointer as *const u64).read() };
-            current = (next != 0).then_some(next);
-            remaining -= 1;
-        }
-
-        assert!(
-            remaining == 0,
-            "FreeWorld frame recycler corrupt: count larger than list"
-        );
     }
 
     fn reuse_stats(&self) -> crate::memory::FrameReuseStats {
@@ -277,7 +451,72 @@ impl BootFrameAllocator {
         virtual_address as *mut u8
     }
 
-    fn was_issued_by_monotonic_allocator(&self, frame_start: u64) -> bool {
+    fn frame_state(&self) -> FrameStateBitmap {
+        self.frame_state
+            .expect("FreeWorld frame-state bitmap not initialized")
+    }
+
+    fn bitmap_location(&self, frame_start: u64) -> (*mut u8, u8) {
+        let state = self.frame_state();
+        let frame_index = frame_start / PAGE_SIZE;
+
+        assert!(
+            frame_index < state.tracked_frames,
+            "FreeWorld frame-state lookup outside tracked physical memory"
+        );
+
+        let byte_index = (frame_index / 8) as usize;
+        let bit_mask = 1u8 << (frame_index % 8);
+
+        assert!(
+            byte_index < state.byte_len,
+            "FreeWorld frame-state bitmap byte index overflow"
+        );
+
+        let pointer = self.direct_map_pointer(
+            state.physical_start + byte_index as u64,
+        );
+
+        (pointer, bit_mask)
+    }
+
+    fn is_frame_allocated(&self, frame_start: u64) -> bool {
+        let (pointer, bit_mask) = self.bitmap_location(frame_start);
+        let value = unsafe { pointer.read() };
+        value & bit_mask != 0
+    }
+
+    fn mark_frame_allocated(&mut self, frame_start: u64) {
+        assert!(
+            self.is_managed_frame(frame_start),
+            "FreeWorld attempted to allocate unmanaged physical frame"
+        );
+        assert!(
+            !self.is_frame_allocated(frame_start),
+            "FreeWorld physical frame allocated twice: {frame_start:#x}"
+        );
+
+        let (pointer, bit_mask) = self.bitmap_location(frame_start);
+        let value = unsafe { pointer.read() };
+        unsafe { pointer.write(value | bit_mask) };
+    }
+
+    fn mark_frame_free(&mut self, frame_start: u64) {
+        assert!(
+            self.is_frame_allocated(frame_start),
+            "FreeWorld physical frame state clear during free: {frame_start:#x}"
+        );
+
+        let (pointer, bit_mask) = self.bitmap_location(frame_start);
+        let value = unsafe { pointer.read() };
+        unsafe { pointer.write(value & !bit_mask) };
+    }
+
+    fn is_allocator_metadata_frame(&self, frame_start: u64) -> bool {
+        self.frame_state().contains_frame(frame_start)
+    }
+
+    fn is_managed_frame(&self, frame_start: u64) -> bool {
         let frame_end = match frame_start.checked_add(PAGE_SIZE) {
             Some(end) => end,
             None => return false,
@@ -326,9 +565,9 @@ impl BootFrameAllocator {
 }
 
 // SAFETY: fresh frames come only from bootloader regions marked Usable, with
-// low memory and explicit kernel/ramdisk reservations excluded. Recycled
-// frames enter the intrusive free stack only through the unsafe ownership-
- // transfer API and are removed from that stack before reuse.
+// low memory and explicit kernel/ramdisk reservations excluded. The always-on
+// frame-state bitmap enforces a clear->allocated transition for every frame
+// handed out and allocated->clear before any frame enters the recycler.
 unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
     fn allocate_frame(&mut self) -> Option<X86PhysFrame<Size4KiB>> {
         self.next_frame()
@@ -386,7 +625,17 @@ pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
 
         let regions: &'static [MemoryRegion] = &boot_info.memory_regions;
         let allocator =
-            BootFrameAllocator::new(regions, kernel, ramdisk, physical_memory_offset);
+            BootFrameAllocator::new(regions, kernel, ramdisk, physical_memory_offset)?;
+
+        let bitmap = allocator.frame_state();
+        serial_memory_line(format_args!(
+            "  memory: frame-state bitmap phys=[{:#x}..{:#x}) bytes={} pages={} tracked_frames={}\n",
+            bitmap.physical_start,
+            bitmap.physical_end(),
+            bitmap.byte_len,
+            bitmap.page_count,
+            bitmap.tracked_frames,
+        ));
 
         let manager = X86MemoryManager {
             mapper,
@@ -433,6 +682,17 @@ pub unsafe fn free_frame(frame: PhysFrame) -> Result<(), MemoryError> {
 
 pub fn frame_reuse_stats() -> Result<crate::memory::FrameReuseStats, MemoryError> {
     with_manager(|manager| manager.allocator.reuse_stats())
+}
+
+#[cfg(feature = "m35a-ci-self-test")]
+pub fn frame_is_allocated_for_test(frame: PhysFrame) -> Result<bool, MemoryError> {
+    with_manager(|manager| {
+        if !manager.allocator.is_managed_frame(frame.start) {
+            return Err(MemoryError::FrameNotAllocatorOwned);
+        }
+
+        Ok(manager.allocator.is_frame_allocated(frame.start))
+    })?
 }
 
 pub unsafe fn map_page(
