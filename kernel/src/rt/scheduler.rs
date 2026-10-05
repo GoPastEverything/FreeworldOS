@@ -440,7 +440,7 @@ fn wait_for_timer_tick_on_task_stack(task_name: &str) {
         // only succeeds when the existing LAPIC timer handler advances the
         // architecture-neutral tick count and returns to this same task.
         unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("hlt", options(nostack, preserves_flags));
         }
 
         let after = super::time::now().0;
