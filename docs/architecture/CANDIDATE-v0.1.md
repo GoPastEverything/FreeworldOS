@@ -181,6 +181,8 @@ Expected work includes:
 
 Required external names may match what binaries import. Their implementations remain FreeWorldOS code.
 
+For Windows compatibility, the practical stable boundary is the documented user-facing system-DLL/API surface rather than undocumented low-level syscall numbers. FreeWorldOS therefore supplies clean-room compatibility implementations for system-facing interfaces such as `ntdll`/`kernel32`-class APIs as required, while application-provided matching-ISA DLLs load and execute as shipped.
+
 ---
 
 ## 8. LinuxFacet
@@ -194,6 +196,8 @@ Linux compatibility is layered:
 5. Linux UAPI / syscall compatibility
 
 Many dynamically linked programs reach the kernel through libc, while static programs and some runtimes issue Linux syscalls directly. Therefore Linux syscall compatibility is required independently of libc strategy.
+
+For Linux compatibility, the stable kernel boundary is the Linux syscall/UAPI contract. A matching-ISA distro-provided glibc or musl shared object is expected to load and execute natively like any other ELF `.so`; FreeWorldOS does not need to replace that application/userland libc merely to provide Linux compatibility. LinuxFacet implements the required syscall-facing semantics underneath it.
 
 Frozen requirement:
 
