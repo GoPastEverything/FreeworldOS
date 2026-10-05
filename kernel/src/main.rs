@@ -128,6 +128,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         debug::events::dump_recent_to_serial(8);
     }
 
+    #[cfg(feature = "m35c-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m3.5c.task_stack",
+            object::task_stack_ci_self_test,
+        );
+    }
+
+    #[cfg(feature = "m35c-ci-guard-fault-test")]
+    {
+        object::task_guard_fault_ci_test();
+    }
+
     #[cfg(feature = "m35b-ci-panic-test")]
     {
         debug::events::record(

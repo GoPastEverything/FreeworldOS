@@ -4,24 +4,36 @@ pub mod counter;
 pub mod handle;
 pub mod module;
 pub mod process;
+pub mod task;
 
 use counter::CounterObject;
 use handle::{Handle, HandleError, Rights};
+use task::{TaskInfo, TaskObject, TaskState};
 
 pub enum FwObject {
     Counter(CounterObject),
+    Task(TaskObject),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectError {
     Handle(HandleError),
+    Memory(crate::memory::MemoryError),
     WrongObjectType,
+    TaskIdExhausted,
+    TaskStackSlotsExhausted,
     SelfTestFailed,
 }
 
 impl From<HandleError> for ObjectError {
     fn from(value: HandleError) -> Self {
         Self::Handle(value)
+    }
+}
+
+impl From<crate::memory::MemoryError> for ObjectError {
+    fn from(value: crate::memory::MemoryError) -> Self {
+        Self::Memory(value)
     }
 }
 
@@ -36,11 +48,26 @@ pub fn create_counter(initial: u64, rights: Rights) -> Result<Handle, ObjectErro
     Ok(handle::insert(object, rights)?)
 }
 
+pub fn create_task(rights: Rights) -> Result<Handle, ObjectError> {
+    let object = Arc::new(FwObject::Task(TaskObject::new()?));
+    Ok(handle::insert(object, rights)?)
+}
+
+pub fn task_info(handle_value: Handle) -> Result<TaskInfo, ObjectError> {
+    let object = handle::get(handle_value, Rights::READ)?;
+
+    match object.as_ref() {
+        FwObject::Task(task) => Ok(task.info()),
+        _ => Err(ObjectError::WrongObjectType),
+    }
+}
+
 pub fn counter_read(handle_value: Handle) -> Result<u64, ObjectError> {
     let object = handle::get(handle_value, Rights::READ)?;
 
     match object.as_ref() {
         FwObject::Counter(counter) => Ok(counter.read()),
+        _ => Err(ObjectError::WrongObjectType),
     }
 }
 
@@ -49,6 +76,7 @@ pub fn counter_increment(handle_value: Handle) -> Result<u64, ObjectError> {
 
     match object.as_ref() {
         FwObject::Counter(counter) => Ok(counter.increment()),
+        _ => Err(ObjectError::WrongObjectType),
     }
 }
 
@@ -181,4 +209,82 @@ pub fn ci_self_test() -> Result<(), ObjectError> {
     ));
 
     Ok(())
+}
+
+
+#[cfg(feature = "m35c-ci-self-test")]
+pub fn task_stack_ci_self_test() -> Result<(), ObjectError> {
+    let before = crate::memory::frame_reuse_stats()?;
+    let task_handle = create_task(Rights::READ)?;
+    let info = task_info(task_handle)?;
+
+    if info.id == 0
+        || info.state != TaskState::Created
+        || info.stack_pages != task::TASK_STACK_PAGES
+        || info.guard_page.checked_add(crate::memory::PAGE_SIZE)
+            != Some(info.stack_bottom)
+        || info.stack_bottom
+            .checked_add(task::TASK_STACK_PAGES as u64 * crate::memory::PAGE_SIZE)
+            != Some(info.stack_top)
+    {
+        close(task_handle)?;
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let object = handle::get(task_handle, Rights::READ)?;
+    let writable = match object.as_ref() {
+        FwObject::Task(task) => task.stack_writable_ci_test(),
+        _ => false,
+    };
+    drop(object);
+
+    if !writable {
+        close(task_handle)?;
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    close(task_handle)?;
+
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total)
+        != task::TASK_STACK_PAGES as u64
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C task-stack self-test: passed object=ok stack_writable=ok stack_pages={} returned_frames={}\n",
+        task::TASK_STACK_PAGES,
+        task::TASK_STACK_PAGES,
+    ));
+
+    Ok(())
+}
+
+#[cfg(feature = "m35c-ci-guard-fault-test")]
+pub fn task_guard_fault_ci_test() -> ! {
+    let task_handle = create_task(Rights::READ)
+        .expect("M3.5-C guard test failed to create task");
+    let info = task_info(task_handle)
+        .expect("M3.5-C guard test failed to inspect task");
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C guard fault test: task_id={} guard={:#x} stack=[{:#x}..{:#x})\n",
+        info.id,
+        info.guard_page,
+        info.stack_bottom,
+        info.stack_top,
+    ));
+
+    // SAFETY: This dedicated CI image intentionally stores into the reserved
+    // not-present page immediately below the task stack. The expected result
+    // is the existing fatal #PF diagnostic path; execution must not continue.
+    unsafe {
+        core::ptr::write_volatile(
+            info.guard_page as *mut u64,
+            0x4657_4755_4152_4421,
+        );
+    }
+
+    panic!("M3.5-C guard-page test unexpectedly returned");
 }
