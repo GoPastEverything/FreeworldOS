@@ -19,6 +19,7 @@ Nothing here claims PE/ELF/WinFacet/LinuxFacet compatibility yet. Those are stag
 5. RegCube stores state; the VFS stores files.
 6. File format, operating environment, ABI, and CPU architecture are independent properties.
 7. x86_64 is the first implementation target; the architecture must not hard-code x86_64 as the universal model.
+8. Matching-ISA PE/ELF executables and modules run their own instructions directly on the CPU; FreeWorldOS provides loaders and compatibility facets, not a guest OS, VM, or CPU emulator.
 
 ## Bootstrap target
 
@@ -69,7 +70,7 @@ docs/
 - **M3:** ✅ deterministic kernel heap + native object + generational handles + rights attenuation + close/reclamation proof
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
-- **M3.5-C:** ◐ C1–C2f merged; C2g proves delayed restoration of a saved Interrupt frame through IRETQ using a fixed A→B test handoff; timer task selection remains off
+- **M3.5-C:** ◐ C1–C2g merged; C2h makes the C2g handoff one-shot, unifies Interrupt restoration behind one IRETQ tail, and freezes the no-switch-from-dedicated-IST rule before timer scheduling policy
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception

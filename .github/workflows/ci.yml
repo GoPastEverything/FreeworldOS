@@ -537,7 +537,7 @@ jobs:
 
           grep -Fq "FreeWorldOS: M3.5-C2g interrupt resume: starting capture->B->iretq(A) proof" interrupt-resume-serial.log
           grep -Fq "FreeWorldOS: M3.5-C2g task B: observed A Interrupt frame after EOI/depth teardown" interrupt-resume-serial.log
-          grep -Eq "FreeWorldOS: M3.5-C2g interrupt resume: frame=0xffffa[0-9a-f]+ kind=interrupt saved_on=A B_observed=ok eoi_before_handoff=ok depth_before_handoff=clear resume_path=iretq all_gprs=ok if_restored=ok" interrupt-resume-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2g interrupt resume: frame=0xffffa[0-9a-f]+ kind=interrupt saved_on=A B_observed=ok eoi_before_handoff=ok depth_before_handoff=clear resume_path=iretq all_gprs=ok if_restored=ok handoff_one_shot=ok shared_iretq_tail=ok" interrupt-resume-serial.log
           grep -Fq "FreeWorldOS: M3.5-C2g resume proof: passed fixed_handoff=A->B explicit_resume=B->A timer_selection=off" interrupt-resume-serial.log
 
           if grep -Fq "KERNEL PANIC" interrupt-resume-serial.log \
