@@ -154,6 +154,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         rt::scheduler::ci_interrupt_safe_roundtrip_test();
     }
 
+    #[cfg(feature = "m35c2e-ci-irq-stack-test")]
+    {
+        rt::scheduler::ci_irq_on_task_stack_test();
+    }
+
     #[cfg(feature = "m35c-ci-guard-fault-test")]
     {
         object::task_guard_fault_ci_test();

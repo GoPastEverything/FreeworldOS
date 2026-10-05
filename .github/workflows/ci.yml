@@ -109,6 +109,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-roundtrip-bios.img
 
+      - name: Build IRQ-on-task-stack kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c2e-ci-irq-stack-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-irq-task-stack-bios.img
+
       - name: Validate host debug tools
         shell: bash
         run: |
@@ -388,6 +402,44 @@ jobs:
             || grep -Fq "FreeWorldOS: FATAL" roundtrip-switch-serial.log \
             || grep -Fq "FreeWorldOS: EXCEPTION:" roundtrip-switch-serial.log; then
             echo "unexpected panic or exception during C2d round-trip proof" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot timer IRQ-on-task-stack proof image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-irq-task-stack-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > irq-task-stack-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat irq-task-stack-serial.log
+
+          grep -Eq "FreeWorldOS: M3.5-C2e irq_on_task_stack=ok task=B before=[0-9]+ after=[1-9][0-9]*" irq-task-stack-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2e irq_on_task_stack=ok task=A before=[0-9]+ after=[1-9][0-9]*" irq-task-stack-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2e irq-on-task-stack: passed A=ok B=ok target_rsp_under_cli=ok timer_preemption=off" irq-task-stack-serial.log
+
+          if grep -Fq "KERNEL PANIC" irq-task-stack-serial.log \
+            || grep -Fq "PANIC REENTRY" irq-task-stack-serial.log \
+            || grep -Fq "FreeWorldOS: FATAL" irq-task-stack-serial.log \
+            || grep -Fq "FreeWorldOS: EXCEPTION:" irq-task-stack-serial.log; then
+            echo "unexpected panic or exception during C2e IRQ-on-task-stack proof" >&2
             exit 1
           fi
 
