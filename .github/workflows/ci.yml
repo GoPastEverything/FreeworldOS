@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -147,6 +147,8 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5b.event_ring" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5c.task_stack" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M3.5-C task-stack self-test: passed object=ok stack_writable=ok stack_pages=4 returned_frames=4" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5c.ownership" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C ownership self-test: passed runnable_close=denied saved_rsp_close=denied guard_reservation=ok sysv_rsp_align=ok" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0300 " selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log

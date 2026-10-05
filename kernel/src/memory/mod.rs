@@ -1,6 +1,12 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 pub mod heap;
 
 pub const PAGE_SIZE: u64 = 4096;
+
+const MAX_VIRTUAL_PAGE_RESERVATIONS: usize = 1024;
+static RESERVED_VIRTUAL_PAGES: [AtomicU64; MAX_VIRTUAL_PAGE_RESERVATIONS] =
+    [const { AtomicU64::new(0) }; MAX_VIRTUAL_PAGE_RESERVATIONS];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PhysFrame {
@@ -158,6 +164,9 @@ pub enum MemoryError {
     NoSelfTestVirtualAddress,
     SelfTestDataMismatch,
     SelfTestFrameMismatch,
+    VirtualPageReserved,
+    VirtualPageNotReserved,
+    VirtualReservationTableFull,
 }
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
@@ -183,6 +192,60 @@ pub fn frame_reuse_stats() -> Result<FrameReuseStats, MemoryError> {
     crate::arch::memory::frame_reuse_stats()
 }
 
+/// Reserves one virtual page against generic map_page() callers.
+///
+/// C2b uses this for live task-stack guard pages. Reservations are fixed-size,
+/// allocation-free metadata and are independent of whether a leaf PTE exists.
+/// M3.5-C remains single-CPU; SMP must strengthen reservation coordination
+/// before multiple CPUs can mutate virtual mappings concurrently.
+pub fn reserve_virtual_page(virtual_address: u64) -> Result<(), MemoryError> {
+    if virtual_address == 0 || virtual_address % PAGE_SIZE != 0 {
+        return Err(if virtual_address % PAGE_SIZE != 0 {
+            MemoryError::AddressNotAligned
+        } else {
+            MemoryError::InvalidVirtualAddress
+        });
+    }
+
+    for slot in &RESERVED_VIRTUAL_PAGES {
+        if slot.load(Ordering::Acquire) == virtual_address {
+            return Err(MemoryError::VirtualPageReserved);
+        }
+    }
+
+    for slot in &RESERVED_VIRTUAL_PAGES {
+        if slot
+            .compare_exchange(0, virtual_address, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    Err(MemoryError::VirtualReservationTableFull)
+}
+
+pub fn release_virtual_page_reservation(
+    virtual_address: u64,
+) -> Result<(), MemoryError> {
+    for slot in &RESERVED_VIRTUAL_PAGES {
+        if slot
+            .compare_exchange(virtual_address, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    Err(MemoryError::VirtualPageNotReserved)
+}
+
+pub fn is_virtual_page_reserved(virtual_address: u64) -> bool {
+    RESERVED_VIRTUAL_PAGES
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) == virtual_address)
+}
+
 #[cfg(feature = "m35a-ci-self-test")]
 fn frame_is_allocated_for_test(frame: PhysFrame) -> Result<bool, MemoryError> {
     crate::arch::memory::frame_is_allocated_for_test(frame)
@@ -201,6 +264,9 @@ pub unsafe fn map_page(
 ) -> Result<(), MemoryError> {
     if permissions.writable() && permissions.executable() {
         return Err(MemoryError::WriteExecuteDenied);
+    }
+    if is_virtual_page_reserved(virtual_address) {
+        return Err(MemoryError::VirtualPageReserved);
     }
 
     unsafe { crate::arch::memory::map_page(virtual_address, frame, permissions) }

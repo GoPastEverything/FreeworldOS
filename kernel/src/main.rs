@@ -136,6 +136,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m35c2b-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m3.5c.ownership",
+            object::task_ownership_ci_self_test,
+        );
+    }
+
     #[cfg(feature = "m35c-ci-guard-fault-test")]
     {
         object::task_guard_fault_ci_test();
