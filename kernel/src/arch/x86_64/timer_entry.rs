@@ -191,7 +191,7 @@ __freeworld_probe_after_hlt:
     probe_r13 = const PROBE_R13,
     probe_r14 = const PROBE_R14,
     probe_r15 = const PROBE_R15,
-)
+);
 
 unsafe extern "C" {
     fn __freeworld_apic_timer_entry();
