@@ -6,6 +6,7 @@
 extern crate alloc;
 
 mod arch;
+mod debug;
 mod exec;
 mod memory;
 mod object;
@@ -29,6 +30,16 @@ entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::early_init(boot_info);
+    debug::backtrace::init(
+        boot_info.kernel_image_offset,
+        boot_info.kernel_len,
+    );
+    debug::events::record(
+        debug::events::BOOT_BEGIN,
+        debug::events::SUBSYSTEM_BOOT,
+        debug::events::LEVEL_INFO,
+        [0, 0, 0, 0],
+    );
     arch::serial::println("FreeWorldOS: kernel entry");
     arch::serial::println("FreeWorldOS: x86_64 bootstrap active");
 
@@ -42,17 +53,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     #[cfg(feature = "m3-ci-self-test")]
     {
-        if let Err(error) = memory::heap::ci_self_test() {
-            panic!("M3 heap self-test failed: {error:?}");
-        }
+        debug::selftest::run_result(
+            "m3.heap",
+            memory::heap::ci_self_test,
+        );
         arch::serial::println("FreeWorldOS: M3 heap self-test: passed");
     }
 
     #[cfg(feature = "m35a-ci-self-test")]
     {
-        if let Err(error) = memory::frame_reuse_ci_self_test() {
-            panic!("M3.5-A frame reuse self-test failed: {error:?}");
-        }
+        debug::selftest::run_result(
+            "m3.5a.frame_reuse",
+            memory::frame_reuse_ci_self_test,
+        );
 
         let stats = memory::frame_reuse_stats()
             .expect("M3.5-A frame reuse stats unavailable after self-test");
@@ -74,14 +87,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     #[cfg(feature = "m1-ci-self-test")]
     {
-        if let Err(error) = memory::ci_self_test() {
-            panic!("M1 memory self-test failed: {error:?}");
-        }
+        debug::selftest::run_result(
+            "m1.memory",
+            memory::ci_self_test,
+        );
         arch::serial::println("FreeWorldOS: M1 memory self-test: passed");
 
-        arch::serial::println("FreeWorldOS: M1 exception self-test: trigger #BP");
-        arch::exceptions::trigger_test_breakpoint();
-        arch::serial::println("FreeWorldOS: M1 exception self-test: resumed");
+        debug::selftest::run_infallible(
+            "m1.exception.breakpoint",
+            || {
+                arch::serial::println("FreeWorldOS: M1 exception self-test: trigger #BP");
+                arch::exceptions::trigger_test_breakpoint();
+                arch::serial::println("FreeWorldOS: M1 exception self-test: resumed");
+            },
+        );
     }
 
     if let Err(error) = arch::interrupt_controller::enable_timer_delivery_and_prove() {
@@ -94,9 +113,51 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     #[cfg(feature = "m3-ci-self-test")]
     {
-        if let Err(error) = object::ci_self_test() {
-            panic!("M3 object self-test failed: {error:?}");
+        debug::selftest::run_result(
+            "m3.object",
+            object::ci_self_test,
+        );
+    }
+
+    #[cfg(feature = "m35b-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m3.5b.event_ring",
+            debug::events::ci_self_test,
+        );
+        debug::events::dump_recent_to_serial(8);
+    }
+
+    #[cfg(feature = "m35b-ci-panic-test")]
+    {
+        debug::events::record(
+            debug::events::DEBUG_RING_SELFTEST,
+            debug::events::SUBSYSTEM_DEBUG,
+            debug::events::LEVEL_INFO,
+            [0x5041_4e49_4354_4553, 0, 0, 0],
+        );
+        panic!("M3.5-B deliberate panic test");
+    }
+
+    #[cfg(feature = "m35b-ci-fatal-test")]
+    {
+        debug::events::record(
+            debug::events::DEBUG_RING_SELFTEST,
+            debug::events::SUBSYSTEM_DEBUG,
+            debug::events::LEVEL_INFO,
+            [0x4641_5441_4c54_4553, 0, 0, 0],
+        );
+
+        // SAFETY: This feature exists only in the dedicated fatal CI image.
+        // The address is a canonical virtual page outside every FreeWorld
+        // bootstrap/test mapping and is intentionally read to prove #PF dump.
+        unsafe {
+            let _ = core::ptr::read_volatile(
+                0x0000_3000_0000_0000 as *const u64,
+            );
         }
+
+        panic!("M3.5-B fatal test unexpectedly returned");
     }
 
     vfs::init();
@@ -104,6 +165,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     exec::init();
     rt::init();
 
+    debug::events::record(
+        debug::events::BOOT_COMPLETE,
+        debug::events::SUBSYSTEM_BOOT,
+        debug::events::LEVEL_INFO,
+        [0, 0, 0, 0],
+    );
     arch::serial::println("FreeWorldOS: M2 APIC timer delivery online; IF enabled");
     arch::serial::println("FreeWorldOS: M1 foundation online");
     arch::serial::println("FreeWorldOS: bootstrap initialization complete");
@@ -117,8 +184,5 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    arch::disable_interrupts();
-    arch::serial::println("FreeWorldOS: KERNEL PANIC");
-    arch::serial::write_fmt(format_args!("{info}\n"));
-    arch::halt_loop()
+    debug::panic::panic(info)
 }

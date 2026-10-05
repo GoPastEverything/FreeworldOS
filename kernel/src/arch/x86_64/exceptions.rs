@@ -6,12 +6,14 @@ use x86_64::{
     },
 };
 
+use crate::debug::{events, panic as panic_dump};
+
 use super::{
     apic, interrupt_context, pic,
     gdt::{
         DOUBLE_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
     },
-    halt_loop, serial,
+    serial,
 };
 
 lazy_static! {
@@ -77,30 +79,32 @@ pub fn trigger_test_breakpoint() {
     x86_64::instructions::interrupts::int3();
 }
 
-fn fatal_marker() {
-    serial::println("FreeWorldOS: FATAL");
-}
-
-fn log_frame(label: &str, stack_frame: InterruptStackFrame) {
-    serial::write_fmt(format_args!(
-        "FreeWorldOS: EXCEPTION: {label}\n{stack_frame:#?}\n"
-    ));
-}
-
-fn fatal_no_error(label: &str, stack_frame: InterruptStackFrame) -> ! {
+fn fatal_no_error(label: &'static str, stack_frame: InterruptStackFrame) -> ! {
     let _scope = interrupt_context::enter();
-    fatal_marker();
-    log_frame(label, stack_frame);
-    halt_loop()
+    panic_dump::fatal_exception(
+        events::FATAL_EXCEPTION,
+        label,
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        0,
+        0,
+    )
 }
 
-fn fatal_with_error(label: &str, stack_frame: InterruptStackFrame, error_code: u64) -> ! {
+fn fatal_with_error(
+    label: &'static str,
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) -> ! {
     let _scope = interrupt_context::enter();
-    fatal_marker();
-    serial::write_fmt(format_args!(
-        "FreeWorldOS: EXCEPTION: {label} error={error_code:#x}\n{stack_frame:#?}\n"
-    ));
-    halt_loop()
+    panic_dump::fatal_exception(
+        events::FATAL_EXCEPTION,
+        label,
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        error_code,
+        0,
+    )
 }
 
 macro_rules! no_error_handler {
@@ -144,6 +148,17 @@ error_handler!(security_exception, "#SX security");
 
 extern "x86-interrupt" fn breakpoint(stack_frame: InterruptStackFrame) {
     let _scope = interrupt_context::enter();
+    events::record(
+        events::BREAKPOINT,
+        events::SUBSYSTEM_EXCEPTION,
+        events::LEVEL_INFO,
+        [
+            stack_frame.instruction_pointer.as_u64(),
+            stack_frame.stack_pointer.as_u64(),
+            0,
+            0,
+        ],
+    );
     serial::println("FreeWorldOS: EXCEPTION: #BP breakpoint");
     serial::write_fmt(format_args!("{stack_frame:#?}\n"));
 }
@@ -153,9 +168,20 @@ extern "x86-interrupt" fn breakpoint(stack_frame: InterruptStackFrame) {
 /// Do not allocate, acquire locks, map pages, format complex data, or call code
 /// that can fault. A fault that returns can unblock NMIs before this handler has
 /// returned, allowing a nested NMI to reuse and overwrite the same IST stack.
-extern "x86-interrupt" fn non_maskable_interrupt(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn non_maskable_interrupt(stack_frame: InterruptStackFrame) {
     let _scope = interrupt_context::enter();
-    serial::println("FreeWorldOS: EXCEPTION: NMI");
+    events::record(
+        events::NMI_RECEIVED,
+        events::SUBSYSTEM_EXCEPTION,
+        events::LEVEL_WARN,
+        [
+            stack_frame.instruction_pointer.as_u64(),
+            stack_frame.stack_pointer.as_u64(),
+            0,
+            0,
+        ],
+    );
+    serial::write_raw(b"FreeWorldOS: EXCEPTION: NMI\r\n");
 }
 
 extern "x86-interrupt" fn double_fault(
@@ -163,20 +189,26 @@ extern "x86-interrupt" fn double_fault(
     error_code: u64,
 ) -> ! {
     let _scope = interrupt_context::enter();
-    fatal_marker();
-    serial::write_fmt(format_args!(
-        "FreeWorldOS: EXCEPTION: #DF double fault error={error_code:#x}\n{stack_frame:#?}\n"
-    ));
-    halt_loop()
+    panic_dump::fatal_exception(
+        events::FATAL_EXCEPTION,
+        "#DF double fault",
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        error_code,
+        0,
+    )
 }
 
 extern "x86-interrupt" fn machine_check(stack_frame: InterruptStackFrame) -> ! {
     let _scope = interrupt_context::enter();
-    fatal_marker();
-    serial::write_fmt(format_args!(
-        "FreeWorldOS: EXCEPTION: #MC machine check\n{stack_frame:#?}\n"
-    ));
-    halt_loop()
+    panic_dump::fatal_exception(
+        events::FATAL_EXCEPTION,
+        "#MC machine check",
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        0,
+        0,
+    )
 }
 
 extern "x86-interrupt" fn page_fault(
@@ -184,17 +216,18 @@ extern "x86-interrupt" fn page_fault(
     error_code: PageFaultErrorCode,
 ) {
     let _scope = interrupt_context::enter();
-    fatal_marker();
-    match Cr2::read() {
-        Ok(address) => serial::write_fmt(format_args!(
-            "FreeWorldOS: EXCEPTION: #PF page fault address={address:?} error={error_code:?}\n{stack_frame:#?}\n"
-        )),
-        Err(error) => serial::write_fmt(format_args!(
-            "FreeWorldOS: EXCEPTION: #PF page fault address=<noncanonical {error:?}> error={error_code:?}\n{stack_frame:#?}\n"
-        )),
-    }
+    let fault_address = Cr2::read()
+        .map(|address| address.as_u64())
+        .unwrap_or(0);
 
-    halt_loop()
+    panic_dump::fatal_exception(
+        events::PAGE_FAULT,
+        "#PF page fault",
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        error_code.bits(),
+        fault_address,
+    )
 }
 
 extern "x86-interrupt" fn pic_spurious_interrupt(_stack_frame: InterruptStackFrame) {

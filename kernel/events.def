@@ -1,0 +1,19 @@
+// FreeWorldOS shared event ID table.
+// Syntax is deliberately simple enough for both Rust include!() expansion and
+// host-side tools to parse from this one source of truth.
+
+fw_event!(BOOT_BEGIN,             0x0001);
+fw_event!(BOOT_COMPLETE,          0x0002);
+
+fw_event!(SELFTEST_BEGIN,         0x0100);
+fw_event!(SELFTEST_PASS,          0x0101);
+fw_event!(SELFTEST_FAIL,          0x0102);
+
+fw_event!(BREAKPOINT,             0x0200);
+fw_event!(NMI_RECEIVED,           0x0201);
+fw_event!(FATAL_EXCEPTION,        0x0202);
+fw_event!(PAGE_FAULT,             0x0203);
+fw_event!(KERNEL_PANIC,           0x0204);
+fw_event!(PANIC_REENTERED,        0x0205);
+
+fw_event!(DEBUG_RING_SELFTEST,    0x0300);

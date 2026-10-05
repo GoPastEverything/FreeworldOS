@@ -32,12 +32,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-selftest-bios.img
+
+      - name: Build panic-test kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35b-ci-panic-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-panic-bios.img
+
+      - name: Build fatal-test kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35b-ci-fatal-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-fatal-bios.img
+
+      - name: Validate host debug tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/events.py --check
+          python3 -m py_compile tools/events.py tools/symbolize-backtrace.py
+          bash -n tools/qemu-gdb.sh
 
       - name: Install QEMU
         run: |
@@ -89,6 +125,13 @@ jobs:
           grep -Eq "memory: frame-state bitmap .*bytes=[1-9][0-9]* pages=[1-9][0-9]* tracked_frames=[1-9][0-9]*" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M3.5-A frame reuse self-test: passed bitmap_state=ok available=[1-9][0-9]* returned_total=[1-9][0-9]* reused_total=[1-9][0-9]*" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M3 object self-test: passed reuse_iterations=[1-9][0-9]* duplicate_subset=ok shared_lifetime=ok table_full_drop=ok live_objects=0 live_heap_allocations=0" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m1.memory" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m1.exception.breakpoint" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.heap" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5a.frame_reuse" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.object" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m3.5b.event_ring" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0300 " selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 exception self-test: resumed" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M1 foundation online" selftest-boot-serial.log
@@ -104,6 +147,84 @@ jobs:
 
           if grep -F "FreeWorldOS: EXCEPTION:" selftest-boot-serial.log             | grep -Fv "FreeWorldOS: EXCEPTION: #BP breakpoint"; then
             echo "unexpected exception detected during M1 self-test boot" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot deliberate panic image and verify fixed diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-panic-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > panic-boot-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat panic-boot-serial.log
+
+          grep -Fq "FreeWorldOS: KERNEL PANIC" panic-boot-serial.log
+          grep -Fq "FreeWorldOS: PANIC message=M3.5-B deliberate panic test" panic-boot-serial.log
+          grep -Eq "FreeWorldOS: BACKTRACE begin frames=[1-9][0-9]*" panic-boot-serial.log
+          grep -Eq "FreeWorldOS: BT\[[0-9][0-9]\]=0x[0-9a-f]+" panic-boot-serial.log
+          grep -Fq "FreeWorldOS: EVENT-RING begin" panic-boot-serial.log
+          grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0204 " panic-boot-serial.log
+          grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0300 " panic-boot-serial.log
+
+          if grep -Fq "PANIC REENTRY" panic-boot-serial.log; then
+            echo "panic diagnostics recursively panicked" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot deliberate fatal page-fault image and verify diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-fatal-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > fatal-boot-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat fatal-boot-serial.log
+
+          grep -Fq "FreeWorldOS: FATAL" fatal-boot-serial.log
+          grep -Fq "FreeWorldOS: EXCEPTION: #PF page fault" fatal-boot-serial.log
+          grep -Eq "fault=0x300000000000" fatal-boot-serial.log
+          grep -Eq "FreeWorldOS: BACKTRACE begin frames=[1-9][0-9]*" fatal-boot-serial.log
+          grep -Eq "FreeWorldOS: BT\[[0-9][0-9]\]=0x[0-9a-f]+" fatal-boot-serial.log
+          grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0203 " fatal-boot-serial.log
+          grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0300 " fatal-boot-serial.log
+
+          if grep -Fq "PANIC REENTRY" fatal-boot-serial.log; then
+            echo "fatal diagnostics recursively panicked" >&2
             exit 1
           fi
 

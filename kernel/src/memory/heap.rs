@@ -304,6 +304,10 @@ static LIVE_REQUESTED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        assert!(
+            !crate::debug::panic::is_active(),
+            "FreeWorld heap allocation attempted during panic/fatal dump"
+        );
         debug_assert!(
             !crate::arch::in_interrupt(),
             "FreeWorld heap allocation attempted in interrupt context"
@@ -318,6 +322,10 @@ unsafe impl GlobalAlloc for KernelHeap {
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        assert!(
+            !crate::debug::panic::is_active(),
+            "FreeWorld heap deallocation attempted during panic/fatal dump"
+        );
         debug_assert!(
             !crate::arch::in_interrupt(),
             "FreeWorld heap deallocation attempted in interrupt context"
