@@ -149,6 +149,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         rt::scheduler::ci_voluntary_switch_test();
     }
 
+    #[cfg(feature = "m35c2d-ci-roundtrip-test")]
+    {
+        rt::scheduler::ci_interrupt_safe_roundtrip_test();
+    }
+
     #[cfg(feature = "m35c-ci-guard-fault-test")]
     {
         object::task_guard_fault_ci_test();

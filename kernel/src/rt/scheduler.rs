@@ -78,7 +78,10 @@ fn scheduler() -> &'static SchedulerState {
     unsafe { &*(*SCHEDULER.0.get()).as_ptr() }
 }
 
-#[cfg(feature = "m35c2c-ci-switch-test")]
+#[cfg(any(
+    feature = "m35c2c-ci-switch-test",
+    feature = "m35c2d-ci-roundtrip-test",
+))]
 pub fn ci_voluntary_switch_test() -> ! {
     let task_a_ref = object::create_task_ref()
         .expect("C2c failed to create scheduler-owned task A");
@@ -121,28 +124,43 @@ pub fn ci_voluntary_switch_test() -> ! {
     );
 
     let task_a = state.task_a();
-    task_a
-        .begin_running_from_saved()
-        .expect("C2c task A could not transition Runnable -> Running");
-    state.current.store(CURRENT_A, Ordering::Release);
-
     let first_rsp = task_a.saved_stack_pointer();
     assert!(
         task_a.saved_stack_pointer_in_stack(),
         "C2c task A initial saved RSP is outside its stack"
+    );
+    assert!(
+        arch::interrupts_enabled(),
+        "C2c first task start requires IF enabled before scheduler handoff"
     );
 
     crate::arch::serial::println(
         "FreeWorldOS: M3.5-C2c scheduler refs: owned handles=closed",
     );
 
+    // No maskable interrupt may observe Running/current state before the CPU is
+    // actually executing A's stack. NMIs do not inspect scheduler state.
+    arch::disable_interrupts();
+    task_a
+        .begin_running_from_saved()
+        .expect("C2c task A could not transition Runnable -> Running");
+    state.current.store(CURRENT_A, Ordering::Release);
+
     // SAFETY: task A is Running, the scheduler owns its sole strong reference,
-    // and first_rsp points at the validated initial SavedRegisterFrame.
+    // first_rsp points at the validated initial SavedRegisterFrame, and IF is
+    // clear across the handoff. start_first_task re-enables IF on A's stack.
     unsafe { arch::start_first_task(first_rsp) }
 }
 
-#[cfg(feature = "m35c2c-ci-switch-test")]
+#[cfg(any(
+    feature = "m35c2c-ci-switch-test",
+    feature = "m35c2d-ci-roundtrip-test",
+))]
 extern "C" fn task_a_entry() -> ! {
+    assert!(
+        arch::interrupts_enabled(),
+        "C2c task A entered with IF disabled"
+    );
     let state = scheduler();
     let task_a = state.task_a();
 
@@ -162,11 +180,44 @@ extern "C" fn task_a_entry() -> ! {
         task_a.info().id,
     ));
 
-    yield_a_to_b()
+    yield_a_to_b();
+
+    #[cfg(feature = "m35c2c-ci-switch-test")]
+    panic!("C2c task A resumed after the one-way A -> B proof");
+
+    #[cfg(feature = "m35c2d-ci-roundtrip-test")]
+    {
+        let state = scheduler();
+        let task_a = state.task_a();
+        let task_b = state.task_b();
+
+        assert_eq!(
+            state.current.load(Ordering::Acquire),
+            CURRENT_A,
+            "C2d resumed A while scheduler current != A"
+        );
+        assert_eq!(task_a.state(), TaskState::Running);
+        assert_eq!(task_b.state(), TaskState::Runnable);
+        assert!(task_b.saved_stack_pointer_present());
+        assert!(task_b.saved_stack_pointer_in_stack());
+        assert!(arch::interrupts_enabled());
+
+        crate::arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M3.5-C2d task A: resumed saved_b_rsp={:#x} if=on\n",
+            task_b.saved_stack_pointer(),
+        ));
+        crate::arch::serial::println(
+            "FreeWorldOS: M3.5-C2d round trip: passed A->B->A scheduler_refs=owned interrupt_window=closed if_policy=resume_enabled timer_preemption=off",
+        );
+        arch::halt_loop()
+    }
 }
 
-#[cfg(feature = "m35c2c-ci-switch-test")]
-fn yield_a_to_b() -> ! {
+#[cfg(any(
+    feature = "m35c2c-ci-switch-test",
+    feature = "m35c2d-ci-roundtrip-test",
+))]
+fn yield_a_to_b() {
     let state = scheduler();
     let task_a = state.task_a();
     let task_b = state.task_b();
@@ -177,12 +228,10 @@ fn yield_a_to_b() -> ! {
         "C2c yield requested when task A was not current"
     );
 
-    task_a
-        .prepare_running_context_save()
-        .expect("C2c task A could not prepare Running -> Runnable save");
-    task_b
-        .begin_running_from_saved()
-        .expect("C2c task B could not transition Runnable -> Running");
+    assert!(
+        arch::interrupts_enabled(),
+        "C2c voluntary yield requires IF enabled on entry"
+    );
 
     let new_rsp = task_b.saved_stack_pointer();
     assert!(
@@ -190,10 +239,21 @@ fn yield_a_to_b() -> ! {
         "C2c task B saved RSP is outside its stack"
     );
 
+    // Close the stale-saved-RSP window: from the first state mutation until
+    // B is executing its restored stack, maskable interrupts remain disabled.
+    arch::disable_interrupts();
+    task_a
+        .prepare_running_context_save()
+        .expect("C2c task A could not prepare Running -> Runnable save");
+    task_b
+        .begin_running_from_saved()
+        .expect("C2c task B could not transition Runnable -> Running");
     state.current.store(CURRENT_B, Ordering::Release);
 
     // SAFETY: The scheduler owns both task references. task A's storage is
     // writable and its stack remains live; task B has a validated saved frame.
+    // IF is clear during the state/RSP handoff and the assembly path re-enables
+    // it only after B's register frame is restored on B's stack.
     unsafe {
         arch::switch_task_context(
             task_a.saved_stack_pointer_storage(),
@@ -201,11 +261,21 @@ fn yield_a_to_b() -> ! {
         );
     }
 
-    panic!("C2c task A resumed after the one-way A -> B proof");
+    assert!(
+        arch::interrupts_enabled(),
+        "C2d resumed task A with IF disabled"
+    );
 }
 
-#[cfg(feature = "m35c2c-ci-switch-test")]
+#[cfg(any(
+    feature = "m35c2c-ci-switch-test",
+    feature = "m35c2d-ci-roundtrip-test",
+))]
 extern "C" fn task_b_entry() -> ! {
+    assert!(
+        arch::interrupts_enabled(),
+        "C2c task B entered with IF disabled"
+    );
     let state = scheduler();
     let task_a = state.task_a();
     let task_b = state.task_b();
@@ -249,9 +319,73 @@ extern "C" fn task_b_entry() -> ! {
         task_b.info().id,
         task_a.saved_stack_pointer(),
     ));
-    crate::arch::serial::println(
-        "FreeWorldOS: M3.5-C2c voluntary switch: passed A->B scheduler_refs=owned timer_preemption=off",
+    #[cfg(feature = "m35c2c-ci-switch-test")]
+    {
+        crate::arch::serial::println(
+            "FreeWorldOS: M3.5-C2c voluntary switch: passed A->B scheduler_refs=owned timer_preemption=off",
+        );
+        arch::halt_loop()
+    }
+
+    #[cfg(feature = "m35c2d-ci-roundtrip-test")]
+    {
+        crate::arch::serial::println(
+            "FreeWorldOS: M3.5-C2d task B: yielding back to A if=on",
+        );
+        yield_b_to_a();
+        panic!("C2d task B resumed after round-trip proof");
+    }
+}
+
+
+#[cfg(feature = "m35c2d-ci-roundtrip-test")]
+pub fn ci_interrupt_safe_roundtrip_test() -> ! {
+    ci_voluntary_switch_test()
+}
+
+#[cfg(feature = "m35c2d-ci-roundtrip-test")]
+fn yield_b_to_a() {
+    let state = scheduler();
+    let task_a = state.task_a();
+    let task_b = state.task_b();
+
+    assert_eq!(
+        state.current.load(Ordering::Acquire),
+        CURRENT_B,
+        "C2d B->A yield requested when task B was not current"
+    );
+    assert!(
+        arch::interrupts_enabled(),
+        "C2d B->A voluntary yield requires IF enabled on entry"
     );
 
-    arch::halt_loop()
+    let new_rsp = task_a.saved_stack_pointer();
+    assert!(
+        task_a.saved_stack_pointer_in_stack(),
+        "C2d task A saved RSP is outside its stack before resume"
+    );
+
+    arch::disable_interrupts();
+    task_b
+        .prepare_running_context_save()
+        .expect("C2d task B could not prepare Running -> Runnable save");
+    task_a
+        .begin_running_from_saved()
+        .expect("C2d task A could not transition Runnable -> Running");
+    state.current.store(CURRENT_A, Ordering::Release);
+
+    // SAFETY: The scheduler owns both tasks, IF is clear across state/RSP
+    // publication, B's old RSP storage is writable, and A's saved frame is
+    // validated. The assembly path restores A and re-enables IF on A's stack.
+    unsafe {
+        arch::switch_task_context(
+            task_b.saved_stack_pointer_storage(),
+            new_rsp,
+        );
+    }
+
+    assert!(
+        arch::interrupts_enabled(),
+        "C2d resumed task B with IF disabled"
+    );
 }

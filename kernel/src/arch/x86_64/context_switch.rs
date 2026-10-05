@@ -24,6 +24,7 @@ __freeworld_switch_task_context:
     pop r12
     pop rbp
     pop rbx
+    sti
     ret
 
     .global __freeworld_start_first_task
@@ -37,6 +38,7 @@ __freeworld_start_first_task:
     pop r12
     pop rbp
     pop rbx
+    sti
     ret
     "#
 );
@@ -54,7 +56,10 @@ unsafe extern "C" {
 /// old_rsp must be writable scheduler-owned storage for the current task.
 /// new_rsp must point at a valid FreeWorld SavedRegisterFrame followed by a
 /// return RIP on a live task stack. The caller must hold strong references to
-/// both task objects for the entire switch.
+/// both task objects for the entire switch. Maskable interrupts must already
+/// be disabled by the scheduler. The resumed task is returned with IF enabled;
+/// C2d deliberately treats voluntary-yield IF=on as an invariant rather than
+/// storing a full RFLAGS image.
 pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
     unsafe { __freeworld_switch_task_context(old_rsp, new_rsp) };
 }
@@ -64,8 +69,9 @@ pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
 /// # Safety
 ///
 /// new_rsp must point at a valid initial SavedRegisterFrame on a live,
-/// scheduler-owned task stack. This function never returns to the bootstrap
-/// stack.
+/// scheduler-owned task stack. Maskable interrupts must already be disabled.
+/// The task begins with IF enabled and this function never returns to the
+/// bootstrap stack.
 pub unsafe fn start_first_task(new_rsp: u64) -> ! {
     unsafe { __freeworld_start_first_task(new_rsp) }
 }
