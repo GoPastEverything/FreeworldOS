@@ -151,6 +151,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-interrupt-resume-bios.img
 
+      - name: Build timer round-robin preemption image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c2i-ci-preempt-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-timer-round-robin-bios.img
+
       - name: Validate host debug tools
         shell: bash
         run: |
@@ -545,6 +559,44 @@ jobs:
             || grep -Fq "FreeWorldOS: FATAL" interrupt-resume-serial.log \
             || grep -Fq "FreeWorldOS: EXCEPTION:" interrupt-resume-serial.log; then
             echo "unexpected panic or exception during C2g Interrupt-frame resume proof" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot real timer round-robin preemption proof
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-timer-round-robin-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > timer-round-robin-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat timer-round-robin-serial.log
+
+          grep -Fq "FreeWorldOS: M3.5-C2i preemption: starting two-task one-tick round-robin" timer-round-robin-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2i timer round-robin: switches=[0-9]+ A_to_B=[0-9]+ B_to_A=[0-9]+ A_runs=[0-9]+ B_runs=[0-9]+ voluntary_starts=1 interrupt_resumes=[0-9]+ quantum_ticks=1 policy=round_robin depth=clear eoi_before_switch=ok" timer-round-robin-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2i preemption proof: passed timer_selected=ok two_task_round_robin=ok priorities=off smp=off" timer-round-robin-serial.log
+
+          if grep -Fq "KERNEL PANIC" timer-round-robin-serial.log \
+            || grep -Fq "PANIC REENTRY" timer-round-robin-serial.log \
+            || grep -Fq "FreeWorldOS: FATAL" timer-round-robin-serial.log \
+            || grep -Fq "FreeWorldOS: EXCEPTION:" timer-round-robin-serial.log; then
+            echo "unexpected panic or exception during C2i timer preemption proof" >&2
             exit 1
           fi
 

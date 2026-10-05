@@ -289,11 +289,35 @@ extern "C" fn __freeworld_apic_timer_dispatch(frame: *mut TimerInterruptFrame) {
     #[cfg(not(any(
         feature = "m35c2f-ci-trap-frame-test",
         feature = "m35c2g-ci-resume-interrupt-test",
+        feature = "m35c2i-ci-preempt-test",
     )))]
     let _ = frame;
 
+    #[cfg(feature = "m35c2i-ci-preempt-test")]
+    let preempt_ready = {
+        let frame_address = frame as u64;
+        // SAFETY: The timer entry's 160-byte frame is live until this dispatcher
+        // either returns to the shared IRETQ tail or hands execution away.
+        let frame_ref = unsafe { &*frame };
+        crate::rt::scheduler::timer_preemption_capture(
+            frame_address,
+            TIMER_INTERRUPT_FRAME_BYTES as u64,
+            frame_ref.rsp,
+            frame_ref.rflags,
+            frame_address & 0xf == 0,
+        )
+    };
+
     // Tick accounting and LAPIC EOI happen before any possible handoff.
     apic::timer_interrupt();
+
+    #[cfg(feature = "m35c2i-ci-preempt-test")]
+    if preempt_ready {
+        // The timer frame is task-owned. EOI is complete. Drop CPU interrupt
+        // depth before the timer policy hands execution to another task.
+        drop(scope);
+        crate::rt::scheduler::timer_preemption_handoff();
+    }
 
     #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
     if probe_match && crate::rt::scheduler::consume_timer_interrupt_resume_handoff() {
