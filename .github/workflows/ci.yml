@@ -271,10 +271,10 @@ jobs:
           cat task-guard-boot-serial.log
 
           grep -Fq "FreeWorldOS: M3.5-C guard fault test:" task-guard-boot-serial.log
-          grep -Fq "guard=0x100000000000" task-guard-boot-serial.log
+          grep -Fq "guard=0xffffa00000000000" task-guard-boot-serial.log
           grep -Fq "FreeWorldOS: FATAL" task-guard-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #PF page fault" task-guard-boot-serial.log
-          grep -Fq "fault=0x100000000000" task-guard-boot-serial.log
+          grep -Fq "fault=0xffffa00000000000" task-guard-boot-serial.log
 
           if grep -Fq "PANIC REENTRY" task-guard-boot-serial.log; then
             echo "guard-page fatal diagnostics recursively panicked" >&2

@@ -5,7 +5,7 @@ use crate::memory::{self, PagePermissions, PhysFrame, PAGE_SIZE};
 use super::ObjectError;
 
 pub const TASK_STACK_PAGES: usize = 4;
-const TASK_STACK_REGION_START: u64 = 0x0000_1000_0000_0000;
+const TASK_STACK_REGION_START: u64 = 0xffff_a000_0000_0000;
 const TASK_STACK_SLOT_PAGES: u64 = TASK_STACK_PAGES as u64 + 1;
 const TASK_STACK_SLOT_BYTES: u64 = TASK_STACK_SLOT_PAGES * PAGE_SIZE;
 const MAX_TASK_STACK_SLOTS: u64 = 1024;

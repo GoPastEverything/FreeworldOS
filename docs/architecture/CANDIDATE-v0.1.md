@@ -550,6 +550,17 @@ Current sequence:
 - M3: heap, FW object/handle core, capability skeleton
 - M4: VFS mount/object graph, binary-safe names, RAM filesystem, namespace projections
 - M5: native ELF PT_NOTE validation, ring 3, versioned initial-stack startup record, kernel-mapped callgate and call table, fw-abi/fw-sys/libfw minimum, status-code ABI, and a no_std FreeWorld userspace hello
+
+### M5 address-space prerequisite
+
+Before FreeWorld creates ring-3 process page tables, the x86_64 address-space split must be explicit:
+
+- the lower canonical half belongs to process/user mappings, except deliberately defined shared user mappings such as the native callgate;
+- kernel-private mappings live in the higher half and remain present consistently across process address spaces;
+- kernel-private mappings include the kernel image, privileged physical-memory/direct map, kernel heap, task stacks, and device mappings;
+- the current bootstrap placement of the kernel image and physical-memory map must therefore be relocated/hardened before M5 user address spaces are considered complete.
+
+M3.5-C task stacks are moved into the higher half before their first saved context is created so no scheduler state depends on a lower-half kernel-stack address.
 - M6: ELF decoder and initial LinuxFacet syscall interception
 - M7: PE decoder and initial WinFacet DLL/API surface
 - M8: FW_MODULE loader and Bridge ABI v1

@@ -69,7 +69,7 @@ docs/
 - **M3:** ✅ deterministic kernel heap + native object + generational handles + rights attenuation + close/reclamation proof
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
-- **M3.5-C:** ◐ task object + recycler-backed guarded kernel stack first; saved context and deterministic voluntary switching follow
+- **M3.5-C:** ◐ C1 task object + recycler-backed guarded kernel stack merged; C2 starts with higher-half stack placement, then saved context + deterministic voluntary switching
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
