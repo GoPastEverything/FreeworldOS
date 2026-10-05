@@ -76,6 +76,7 @@ pub enum HandleError {
     AlreadyInitialized,
     TableFull,
     InvalidHandle,
+    ObjectBusy,
     AccessDenied {
         required: Rights,
         granted: Rights,
@@ -188,12 +189,33 @@ impl HandleTable {
 
     fn close(&mut self, handle: Handle) -> Result<Arc<FwObject>, HandleError> {
         let (index, generation) = handle.parts().ok_or(HandleError::InvalidHandle)?;
-        let slot = &mut self.slots[index];
 
-        if slot.retired || slot.generation != generation {
-            return Err(HandleError::InvalidHandle);
+        {
+            let slot = &self.slots[index];
+            if slot.retired || slot.generation != generation {
+                return Err(HandleError::InvalidHandle);
+            }
+
+            let entry = slot.entry.as_ref().ok_or(HandleError::InvalidHandle)?;
+            let handle_count = self
+                .slots
+                .iter()
+                .filter(|candidate| {
+                    candidate
+                        .entry
+                        .as_ref()
+                        .is_some_and(|candidate_entry| {
+                            Arc::ptr_eq(&candidate_entry.object, &entry.object)
+                        })
+                })
+                .count();
+
+            if handle_count == 1 && !entry.object.can_close_last_handle() {
+                return Err(HandleError::ObjectBusy);
+            }
         }
 
+        let slot = &mut self.slots[index];
         let entry = slot.entry.take().ok_or(HandleError::InvalidHandle)?;
 
         if slot.generation == u32::MAX {

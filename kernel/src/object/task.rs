@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use crate::memory::{self, PagePermissions, PhysFrame, PAGE_SIZE};
 
@@ -14,8 +14,24 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_STACK_SLOT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum TaskState {
-    Created,
+    Created = 0,
+    Runnable = 1,
+    Running = 2,
+    Stopped = 3,
+}
+
+impl TaskState {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Created,
+            1 => Self::Runnable,
+            2 => Self::Running,
+            3 => Self::Stopped,
+            _ => panic!("FreeWorld task state corrupt: {value}"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,12 +41,14 @@ pub struct TaskInfo {
     pub guard_page: u64,
     pub stack_bottom: u64,
     pub stack_top: u64,
+    pub initial_stack_pointer: u64,
     pub stack_pages: usize,
 }
 
 pub struct TaskObject {
     id: u64,
-    state: TaskState,
+    state: AtomicU8,
+    saved_stack_pointer_present: AtomicBool,
     stack: KernelStack,
 }
 
@@ -44,7 +62,8 @@ impl TaskObject {
 
         Ok(Self {
             id,
-            state: TaskState::Created,
+            state: AtomicU8::new(TaskState::Created as u8),
+            saved_stack_pointer_present: AtomicBool::new(false),
             stack: KernelStack::new()?,
         })
     }
@@ -52,12 +71,32 @@ impl TaskObject {
     pub fn info(&self) -> TaskInfo {
         TaskInfo {
             id: self.id,
-            state: self.state,
+            state: self.state(),
             guard_page: self.stack.guard_page,
             stack_bottom: self.stack.stack_bottom,
             stack_top: self.stack.stack_top,
+            initial_stack_pointer: self.stack.initial_stack_pointer(),
             stack_pages: TASK_STACK_PAGES,
         }
+    }
+
+    pub(super) fn can_release_stack(&self) -> bool {
+        matches!(self.state(), TaskState::Created | TaskState::Stopped)
+            && !self.saved_stack_pointer_present.load(Ordering::Acquire)
+    }
+
+    fn state(&self) -> TaskState {
+        TaskState::from_raw(self.state.load(Ordering::Acquire))
+    }
+
+    #[cfg(feature = "m35c2b-ci-self-test")]
+    pub(super) fn set_state_for_ci(&self, state: TaskState) {
+        self.state.store(state as u8, Ordering::Release);
+    }
+
+    #[cfg(feature = "m35c2b-ci-self-test")]
+    pub(super) fn set_saved_stack_pointer_present_for_ci(&self, present: bool) {
+        self.saved_stack_pointer_present.store(present, Ordering::Release);
     }
 
     #[cfg(feature = "m35c-ci-self-test")]
@@ -81,10 +120,20 @@ impl TaskObject {
     }
 }
 
+impl Drop for TaskObject {
+    fn drop(&mut self) {
+        assert!(
+            self.can_release_stack(),
+            "FreeWorld attempted to destroy a runnable/running task or a task with saved stack state"
+        );
+    }
+}
+
 struct KernelStack {
     guard_page: u64,
     stack_bottom: u64,
     stack_top: u64,
+    guard_reserved: bool,
     frames: [Option<PhysFrame>; TASK_STACK_PAGES],
 }
 
@@ -109,10 +158,13 @@ impl KernelStack {
             .checked_add(TASK_STACK_PAGES as u64 * PAGE_SIZE)
             .ok_or(ObjectError::TaskStackSlotsExhausted)?;
 
+        memory::reserve_virtual_page(guard_page)?;
+
         let mut stack = Self {
             guard_page,
             stack_bottom,
             stack_top,
+            guard_reserved: true,
             frames: [None; TASK_STACK_PAGES],
         };
 
@@ -140,10 +192,28 @@ impl KernelStack {
             stack.frames[index] = Some(frame);
         }
 
-        // The guard page itself is intentionally never mapped. The surrounding
-        // page-table hierarchy may exist because the stack pages above it are
-        // mapped, but its leaf entry remains not-present.
+        // The guard page itself is intentionally never mapped. C2b also owns
+        // its virtual address through the memory reservation table, so generic
+        // map_page() callers cannot consume it while this task owns the slot.
+        let initial_stack_pointer = stack.initial_stack_pointer();
+        assert_eq!(
+            initial_stack_pointer & 0xf,
+            8,
+            "FreeWorld task initial RSP violates System V entry alignment"
+        );
+
+        // SAFETY: This is the final 8-byte slot in the mapped stack. It models
+        // the return-address-sized slot present at normal System V function
+        // entry. The future task trampoline must not return through zero.
+        unsafe {
+            core::ptr::write_volatile(initial_stack_pointer as *mut u64, 0);
+        }
+
         Ok(stack)
+    }
+
+    fn initial_stack_pointer(&self) -> u64 {
+        self.stack_top - 8
     }
 }
 
@@ -169,6 +239,12 @@ impl Drop for KernelStack {
                 memory::free_frame(unmapped)
                     .expect("FreeWorld task stack failed to return frame");
             }
+        }
+
+        if self.guard_reserved {
+            memory::release_virtual_page_reservation(self.guard_page)
+                .expect("FreeWorld task guard reservation disappeared before object drop");
+            self.guard_reserved = false;
         }
     }
 }

@@ -15,6 +15,15 @@ pub enum FwObject {
     Task(TaskObject),
 }
 
+impl FwObject {
+    fn can_close_last_handle(&self) -> bool {
+        match self {
+            Self::Counter(_) => true,
+            Self::Task(task) => task.can_release_stack(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectError {
     Handle(HandleError),
@@ -287,4 +296,80 @@ pub fn task_guard_fault_ci_test() -> ! {
     }
 
     panic!("M3.5-C guard-page test unexpectedly returned");
+}
+
+
+#[cfg(feature = "m35c2b-ci-self-test")]
+pub fn task_ownership_ci_self_test() -> Result<(), ObjectError> {
+    use crate::memory::{MemoryError, PagePermissions};
+
+    let task_handle = create_task(Rights::ALL)?;
+    let duplicate_handle = duplicate(task_handle, Rights::READ)?;
+    let info = task_info(task_handle)?;
+
+    if info.initial_stack_pointer & 0xf != 8
+        || info.stack_top & 0xf != 0
+        || info.initial_stack_pointer != info.stack_top - 8
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let guard_probe_frame = crate::memory::allocate_frame()?;
+    let guard_map = unsafe {
+        crate::memory::map_page(
+            info.guard_page,
+            guard_probe_frame,
+            PagePermissions::read_write(),
+        )
+    };
+    if guard_map != Err(MemoryError::VirtualPageReserved) {
+        unsafe { crate::memory::free_frame(guard_probe_frame)?; }
+        return Err(ObjectError::SelfTestFailed);
+    }
+    unsafe { crate::memory::free_frame(guard_probe_frame)?; }
+
+    let object = handle::get(task_handle, Rights::READ)?;
+    let task = match object.as_ref() {
+        FwObject::Task(task) => task,
+        _ => return Err(ObjectError::SelfTestFailed),
+    };
+
+    task.set_state_for_ci(TaskState::Runnable);
+    close(task_handle)?;
+    match close(duplicate_handle) {
+        Err(ObjectError::Handle(HandleError::ObjectBusy)) => {}
+        _ => return Err(ObjectError::SelfTestFailed),
+    }
+
+    task.set_state_for_ci(TaskState::Stopped);
+    task.set_saved_stack_pointer_present_for_ci(true);
+    match close(duplicate_handle) {
+        Err(ObjectError::Handle(HandleError::ObjectBusy)) => {}
+        _ => return Err(ObjectError::SelfTestFailed),
+    }
+
+    task.set_saved_stack_pointer_present_for_ci(false);
+    drop(object);
+    close(duplicate_handle)?;
+
+    let post_drop_frame = crate::memory::allocate_frame()?;
+    unsafe {
+        crate::memory::map_page(
+            info.guard_page,
+            post_drop_frame,
+            PagePermissions::read_write(),
+        )?;
+    }
+    let unmapped = crate::memory::unmap_page(info.guard_page)?;
+    if unmapped != post_drop_frame {
+        unsafe { crate::memory::free_frame(unmapped)?; }
+        return Err(ObjectError::SelfTestFailed);
+    }
+    unsafe { crate::memory::free_frame(unmapped)?; }
+
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C ownership self-test: passed runnable_close=denied saved_rsp_close=denied guard_reservation=ok sysv_rsp_align=ok",
+    );
+
+    Ok(())
 }

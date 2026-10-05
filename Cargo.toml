@@ -18,6 +18,7 @@ m35b-ci-panic-test = ["kernel/m35b-ci-panic-test"]
 m35b-ci-fatal-test = ["kernel/m35b-ci-fatal-test"]
 m35c-ci-self-test = ["kernel/m35c-ci-self-test"]
 m35c-ci-guard-fault-test = ["kernel/m35c-ci-guard-fault-test"]
+m35c2b-ci-self-test = ["kernel/m35c2b-ci-self-test"]
 
 [dependencies]
 ovmf-prebuilt = "=0.2.9"
