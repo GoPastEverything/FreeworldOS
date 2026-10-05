@@ -45,9 +45,17 @@ pub unsafe fn start_first_task(new_rsp: u64) -> ! {
     unsafe { context_switch::start_first_task(new_rsp) }
 }
 
-#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+#[cfg(any(
+    feature = "m35c2f-ci-trap-frame-test",
+    feature = "m35c2g-ci-resume-interrupt-test",
+))]
 pub unsafe fn probe_timer_all_gprs_once() -> bool {
     unsafe { timer_entry::probe_timer_all_gprs_once() }
+}
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+pub unsafe fn resume_interrupt_context(new_rsp: u64) -> ! {
+    unsafe { context_switch::resume_interrupt_context(new_rsp) }
 }
 
 pub fn in_interrupt() -> bool {

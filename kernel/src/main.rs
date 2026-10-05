@@ -164,6 +164,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         rt::scheduler::ci_timer_trap_frame_test();
     }
 
+    #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+    {
+        rt::scheduler::ci_resume_interrupt_frame_test();
+    }
+
     #[cfg(feature = "m35c-ci-guard-fault-test")]
     {
         object::task_guard_fault_ci_test();

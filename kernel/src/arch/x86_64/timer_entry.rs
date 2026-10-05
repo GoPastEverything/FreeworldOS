@@ -209,17 +209,26 @@ pub fn handler_addr() -> VirtAddr {
 /// # Safety
 ///
 /// IF must be enabled and the periodic LAPIC timer must be running.
-#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+#[cfg(any(
+    feature = "m35c2f-ci-trap-frame-test",
+    feature = "m35c2g-ci-resume-interrupt-test",
+))]
 pub unsafe fn probe_timer_all_gprs_once() -> bool {
     unsafe { __freeworld_probe_timer_all_gprs() != 0 }
 }
 
-#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+#[cfg(any(
+    feature = "m35c2f-ci-trap-frame-test",
+    feature = "m35c2g-ci-resume-interrupt-test",
+))]
 fn probe_after_hlt_address() -> u64 {
     unsafe { core::ptr::addr_of!(__freeworld_probe_after_hlt) as u64 }
 }
 
-#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+#[cfg(any(
+    feature = "m35c2f-ci-trap-frame-test",
+    feature = "m35c2g-ci-resume-interrupt-test",
+))]
 fn probe_frame_fields_match(frame: &TimerInterruptFrame) -> bool {
     let kernel_cs = u64::from(CS::get_reg().0);
 
@@ -246,41 +255,74 @@ fn probe_frame_fields_match(frame: &TimerInterruptFrame) -> bool {
 extern "C" fn __freeworld_apic_timer_dispatch(frame: *mut TimerInterruptFrame) {
     let scope = interrupt_context::enter();
 
-    #[cfg(feature = "m35c2f-ci-trap-frame-test")]
-    {
+    #[cfg(any(
+        feature = "m35c2f-ci-trap-frame-test",
+        feature = "m35c2g-ci-resume-interrupt-test",
+    ))]
+    let probe_match = {
         let frame_address = frame as u64;
-        let aligned = frame_address & 0xf == 0;
 
         // SAFETY: The assembly entry passes RSP after all 15 GPR pushes. Intel
         // 64 has already pushed SS, RSP, RFLAGS, CS and RIP.
         let frame_ref = unsafe { &*frame };
-        let interrupted_rsp_delta = frame_ref.rsp.checked_sub(frame_address);
-        let interrupted_rsp_delta_ok =
-            matches!(interrupted_rsp_delta, Some(160 | 168));
-        let frame_fields_ok = probe_frame_fields_match(frame_ref);
+        if frame_ref.rip != probe_after_hlt_address() {
+            false
+        } else {
+            let aligned = frame_address & 0xf == 0;
+            let interrupted_rsp_delta = frame_ref.rsp.checked_sub(frame_address);
+            let interrupted_rsp_delta_ok =
+                matches!(interrupted_rsp_delta, Some(160 | 168));
+            let frame_fields_ok = probe_frame_fields_match(frame_ref);
 
-        crate::rt::scheduler::timer_interrupt_frame_enter(
-            frame_address,
-            TIMER_INTERRUPT_FRAME_BYTES as u64,
-            frame_ref.rsp,
-            frame_ref.rflags,
-            aligned,
-            interrupted_rsp_delta_ok,
-            frame_fields_ok,
-        );
-    }
+            #[cfg(feature = "m35c2f-ci-trap-frame-test")]
+            crate::rt::scheduler::timer_interrupt_frame_enter(
+                frame_address,
+                TIMER_INTERRUPT_FRAME_BYTES as u64,
+                frame_ref.rsp,
+                frame_ref.rflags,
+                aligned,
+                interrupted_rsp_delta_ok,
+                frame_fields_ok,
+            );
 
-    #[cfg(not(feature = "m35c2f-ci-trap-frame-test"))]
+            #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+            crate::rt::scheduler::timer_interrupt_frame_capture_for_resume(
+                frame_address,
+                TIMER_INTERRUPT_FRAME_BYTES as u64,
+                frame_ref.rsp,
+                frame_ref.rflags,
+                aligned,
+                interrupted_rsp_delta_ok,
+                frame_fields_ok,
+            );
+
+            true
+        }
+    };
+
+    #[cfg(not(any(
+        feature = "m35c2f-ci-trap-frame-test",
+        feature = "m35c2g-ci-resume-interrupt-test",
+    )))]
     let _ = frame;
 
-    // Tick accounting and LAPIC EOI happen here. Any future scheduling
-    // decision from timer context must remain after this controller completion.
+    // Tick accounting and LAPIC EOI happen before any possible handoff.
     apic::timer_interrupt();
 
-    #[cfg(feature = "m35c2f-ci-trap-frame-test")]
-    crate::rt::scheduler::timer_interrupt_frame_return_same_task();
+    #[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+    if probe_match && crate::rt::scheduler::timer_interrupt_resume_handoff_armed() {
+        // Interrupt depth is CPU handler-execution state, not task state.
+        // Drop it after EOI and before abandoning A's interrupt-handler stack.
+        drop(scope);
+        crate::rt::scheduler::timer_interrupt_fixed_handoff_to_b();
+    }
 
-    // Interrupt depth belongs to active handler execution, not to a saved task
-    // frame. A future handoff must happen only after this scope is dropped.
+    #[cfg(feature = "m35c2f-ci-trap-frame-test")]
+    if probe_match {
+        crate::rt::scheduler::timer_interrupt_frame_return_same_task();
+    }
+
+    // Same-task returns leave interrupt depth before assembly restores GPRs
+    // and executes IRETQ.
     drop(scope);
 }

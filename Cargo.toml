@@ -23,6 +23,7 @@ m35c2c-ci-switch-test = ["kernel/m35c2c-ci-switch-test"]
 m35c2d-ci-roundtrip-test = ["kernel/m35c2d-ci-roundtrip-test"]
 m35c2e-ci-irq-stack-test = ["kernel/m35c2e-ci-irq-stack-test"]
 m35c2f-ci-trap-frame-test = ["kernel/m35c2f-ci-trap-frame-test"]
+m35c2g-ci-resume-interrupt-test = ["kernel/m35c2g-ci-resume-interrupt-test"]
 
 [dependencies]
 ovmf-prebuilt = "=0.2.9"

@@ -66,9 +66,24 @@ static C2F_SAME_TASK_RETURN_READY: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]
 static C2F_FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_PROBE_HITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
 static C2F_FRAME_FIELDS_OK: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m35c2f-ci-trap-frame-test")]
 static C2F_RSP_DELTA_OK: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+static C2G_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+static C2G_CAPTURED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+static C2G_B_RAN: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+static C2G_RESUME_ISSUED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+static C2G_FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+static C2G_PROBE_HITS: AtomicU64 = AtomicU64::new(0);
 
 
 fn install(task_a: ObjectRef, task_b: ObjectRef) {
@@ -540,15 +555,17 @@ extern "C" fn task_timer_trap_entry() -> ! {
     let before = super::time::now().0;
     let mut all_gprs_ok = true;
 
-    while super::time::now().0 == before {
+    while C2F_PROBE_HITS.load(Ordering::Acquire) == 0 {
         // SAFETY: IF is enabled and the periodic LAPIC timer is already live.
-        // The assembly probe verifies that all fifteen GPR values survive the
-        // timer entry/return before restoring the caller's callee-saved set.
+        // A non-probe interrupt may wake HLT, but it does not count. C2f loops
+        // until a timer frame whose RIP is the exact post-HLT probe label has
+        // been observed.
         all_gprs_ok &= unsafe { arch::probe_timer_all_gprs_once() };
     }
 
     let after = super::time::now().0;
     assert!(after > before);
+    assert!(C2F_PROBE_HITS.load(Ordering::Acquire) >= 1);
     assert!(all_gprs_ok, "C2f timer return changed a general-purpose register");
     assert!(C2F_FRAME_OBSERVED.load(Ordering::Acquire));
     assert!(C2F_FRAME_KIND_OK.load(Ordering::Acquire));
@@ -603,6 +620,7 @@ pub(crate) fn timer_interrupt_frame_enter(
         hardware_rsp >= info.stack_bottom && hardware_rsp <= info.stack_top;
 
     C2F_FRAME_ADDRESS.store(frame_rsp, Ordering::Release);
+    C2F_PROBE_HITS.fetch_add(1, Ordering::AcqRel);
     C2F_FRAME_OBSERVED.store(true, Ordering::Release);
     C2F_FRAME_KIND_OK.store(
         task.saved_context_kind() == SavedContextKind::Interrupt,
@@ -636,4 +654,223 @@ pub(crate) fn timer_interrupt_frame_return_same_task() {
     task.finish_same_task_interrupt_context()
         .expect("C2f failed to consume same-task interrupt frame");
     C2F_SAME_TASK_RETURN_READY.store(true, Ordering::Release);
+}
+
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+pub fn ci_resume_interrupt_frame_test() -> ! {
+    let task_a_ref = object::create_task_ref()
+        .expect("C2g failed to create scheduler-owned task A");
+    let task_b_ref = object::create_task_ref()
+        .expect("C2g failed to create scheduler-owned task B");
+
+    let task_a_handle = object::install_handle_for_ref(&task_a_ref, Rights::READ)
+        .expect("C2g failed to install task A bootstrap handle");
+    let task_b_handle = object::install_handle_for_ref(&task_b_ref, Rights::READ)
+        .expect("C2g failed to install task B bootstrap handle");
+    object::close(task_a_handle)
+        .expect("C2g failed to close task A bootstrap handle");
+    object::close(task_b_handle)
+        .expect("C2g failed to close task B bootstrap handle");
+
+    object::task_from_ref(&task_a_ref)
+        .expect("C2g task A reference changed type")
+        .prepare_initial_context(task_interrupt_resume_a_entry)
+        .expect("C2g failed to prepare task A voluntary entry frame");
+    object::task_from_ref(&task_b_ref)
+        .expect("C2g task B reference changed type")
+        .prepare_initial_context(task_interrupt_resume_b_entry)
+        .expect("C2g failed to prepare task B voluntary entry frame");
+
+    install(task_a_ref, task_b_ref);
+
+    let state = scheduler();
+    assert_eq!(Arc::strong_count(&state.task_a), 1);
+    assert_eq!(Arc::strong_count(&state.task_b), 1);
+
+    let task_a = state.task_a();
+    let first_rsp = task_a.saved_stack_pointer();
+    assert!(task_a.saved_stack_pointer_in_stack());
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Voluntary);
+    assert!(arch::interrupts_enabled());
+
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2g interrupt resume: starting capture->B->iretq(A) proof",
+    );
+
+    arch::disable_interrupts();
+    task_a
+        .begin_running_from_saved()
+        .expect("C2g task A could not transition Runnable -> Running");
+    state.current.store(CURRENT_A, Ordering::Release);
+
+    // SAFETY: A owns a valid voluntary frame and the scheduler owns both task
+    // lifetimes. start_first_task enables IF only after A's stack is active.
+    unsafe { arch::start_first_task(first_rsp) }
+}
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+extern "C" fn task_interrupt_resume_a_entry() -> ! {
+    let state = scheduler();
+    let task_a = state.task_a();
+
+    assert_eq!(state.current.load(Ordering::Acquire), CURRENT_A);
+    assert_eq!(task_a.state(), TaskState::Running);
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::None);
+    assert!(arch::interrupts_enabled());
+
+    C2G_ARMED.store(true, Ordering::Release);
+
+    // SAFETY: IF is enabled and the periodic LAPIC timer is running. A
+    // non-target wake does not count; loop until the exact post-HLT timer frame
+    // is captured, handed to B, and explicitly resumed through IRETQ.
+    let mut all_gprs_ok = true;
+    while C2G_PROBE_HITS.load(Ordering::Acquire) == 0 {
+        all_gprs_ok &= unsafe { arch::probe_timer_all_gprs_once() };
+    }
+
+    assert!(all_gprs_ok, "C2g IRETQ resume changed a general-purpose register");
+    assert!(C2G_CAPTURED.load(Ordering::Acquire));
+    assert!(C2G_B_RAN.load(Ordering::Acquire));
+    assert!(C2G_RESUME_ISSUED.load(Ordering::Acquire));
+    assert!(C2G_PROBE_HITS.load(Ordering::Acquire) >= 1);
+    assert_eq!(state.current.load(Ordering::Acquire), CURRENT_A);
+    assert_eq!(task_a.state(), TaskState::Running);
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::None);
+    assert!(!task_a.saved_stack_pointer_present());
+    assert_eq!(state.task_b().state(), TaskState::Stopped);
+    assert!(!arch::in_interrupt());
+    assert!(arch::interrupts_enabled());
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2g interrupt resume: frame={:#x} kind=interrupt saved_on=A B_observed=ok eoi_before_handoff=ok depth_before_handoff=clear resume_path=iretq all_gprs=ok if_restored=ok\n",
+        C2G_FRAME_ADDRESS.load(Ordering::Acquire),
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2g resume proof: passed fixed_handoff=A->B explicit_resume=B->A timer_selection=off",
+    );
+
+    arch::halt_loop()
+}
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+extern "C" fn task_interrupt_resume_b_entry() -> ! {
+    let state = scheduler();
+    let task_a = state.task_a();
+    let task_b = state.task_b();
+
+    assert_eq!(state.current.load(Ordering::Acquire), CURRENT_B);
+    assert_eq!(task_a.state(), TaskState::Runnable);
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Interrupt);
+    assert!(task_a.saved_stack_pointer_present());
+    assert!(task_a.saved_stack_pointer_in_stack());
+    assert_eq!(task_b.state(), TaskState::Running);
+    assert_eq!(task_b.saved_context_kind(), SavedContextKind::None);
+    assert!(!arch::in_interrupt());
+    assert!(arch::interrupts_enabled());
+
+    C2G_B_RAN.store(true, Ordering::Release);
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2g task B: observed A Interrupt frame after EOI/depth teardown",
+    );
+
+    // The target Interrupt RSP is read only after CLI. No timer-selected policy
+    // exists here: B explicitly resumes the one predetermined task A.
+    arch::disable_interrupts();
+    let a_rsp = task_a.saved_stack_pointer();
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Interrupt);
+    assert!(task_a.saved_stack_pointer_in_stack());
+
+    task_b
+        .stop_running_without_saved_context()
+        .expect("C2g could not stop deterministic handoff task B");
+    task_a
+        .begin_running_from_interrupt()
+        .expect("C2g could not transition A Interrupt frame to Running");
+    state.current.store(CURRENT_A, Ordering::Release);
+    C2G_RESUME_ISSUED.store(true, Ordering::Release);
+
+    // SAFETY: IF is clear, A's 160-byte Interrupt frame remains live on A's
+    // scheduler-owned stack, and begin_running_from_interrupt validated its
+    // kind/range before consuming the task metadata. IRETQ restores A's RFLAGS.
+    unsafe { arch::resume_interrupt_context(a_rsp) }
+}
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+pub(crate) fn timer_interrupt_frame_capture_for_resume(
+    frame_rsp: u64,
+    frame_bytes: u64,
+    hardware_rsp: u64,
+    rflags: u64,
+    aligned: bool,
+    rsp_delta_ok: bool,
+    frame_fields_ok: bool,
+) {
+    if !C2G_ARMED.load(Ordering::Acquire)
+        || !SCHEDULER_INITIALIZED.load(Ordering::Acquire)
+    {
+        return;
+    }
+
+    let state = scheduler();
+    if state.current.load(Ordering::Acquire) != CURRENT_A
+        || C2G_CAPTURED.load(Ordering::Acquire)
+    {
+        return;
+    }
+
+    let task_a = state.task_a();
+    let info = task_a.info();
+    let hardware_rsp_in_stack =
+        hardware_rsp >= info.stack_bottom && hardware_rsp <= info.stack_top;
+
+    assert!(aligned, "C2g timer frame call boundary lost 16-byte alignment");
+    assert!(rsp_delta_ok, "C2g interrupted RSP delta is not 160/168");
+    assert!(frame_fields_ok, "C2g timer Rust-frame field layout mismatch");
+    assert!(hardware_rsp_in_stack, "C2g hardware return RSP escaped A stack");
+    assert!(rflags & (1 << 9) != 0, "C2g interrupted A with IF clear");
+
+    task_a
+        .observe_interrupt_context(frame_rsp, frame_bytes)
+        .expect("C2g failed to publish A Interrupt frame");
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Interrupt);
+    assert!(task_a.saved_stack_pointer_in_stack());
+
+    C2G_FRAME_ADDRESS.store(frame_rsp, Ordering::Release);
+    C2G_PROBE_HITS.fetch_add(1, Ordering::AcqRel);
+    C2G_CAPTURED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+pub(crate) fn timer_interrupt_resume_handoff_armed() -> bool {
+    C2G_CAPTURED.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "m35c2g-ci-resume-interrupt-test")]
+pub(crate) fn timer_interrupt_fixed_handoff_to_b() -> ! {
+    let state = scheduler();
+    let task_a = state.task_a();
+    let task_b = state.task_b();
+
+    assert!(!arch::in_interrupt());
+    assert!(!arch::interrupts_enabled());
+    assert_eq!(state.current.load(Ordering::Acquire), CURRENT_A);
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Interrupt);
+    assert!(task_a.saved_stack_pointer_in_stack());
+    assert_eq!(task_b.saved_context_kind(), SavedContextKind::Voluntary);
+
+    let b_rsp = task_b.saved_stack_pointer();
+    assert!(task_b.saved_stack_pointer_in_stack());
+
+    task_a
+        .park_interrupt_context()
+        .expect("C2g failed to park A Interrupt context as Runnable");
+    task_b
+        .begin_running_from_saved()
+        .expect("C2g failed to enter B from its Voluntary frame");
+    state.current.store(CURRENT_B, Ordering::Release);
+
+    // SAFETY: B's voluntary frame was validated under IF=0 and B's stack is
+    // scheduler-owned. The existing entry path enables IF only on B's stack.
+    unsafe { arch::start_first_task(b_rsp) }
 }

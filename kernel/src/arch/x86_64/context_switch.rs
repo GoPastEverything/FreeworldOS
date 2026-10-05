@@ -40,12 +40,35 @@ __freeworld_start_first_task:
     pop rbx
     sti
     ret
+
+    .global __freeworld_resume_interrupt_context
+    .type __freeworld_resume_interrupt_context,@function
+__freeworld_resume_interrupt_context:
+    mov rsp, rdi
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
     "#
 );
 
 unsafe extern "C" {
     fn __freeworld_switch_task_context(old_rsp: *mut u64, new_rsp: u64);
     fn __freeworld_start_first_task(new_rsp: u64) -> !;
+    fn __freeworld_resume_interrupt_context(new_rsp: u64) -> !;
 }
 
 /// Saves the current SysV callee-saved register frame on the current stack,
@@ -74,4 +97,16 @@ pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
 /// bootstrap stack.
 pub unsafe fn start_first_task(new_rsp: u64) -> ! {
     unsafe { __freeworld_start_first_task(new_rsp) }
+}
+
+
+/// Restores a full timer Interrupt frame and returns through IRETQ.
+///
+/// # Safety
+///
+/// new_rsp must point at a live 160-byte timer Interrupt frame owned by the
+/// scheduler's target task. Maskable interrupts must already be disabled.
+/// IRETQ restores the interrupted task's RFLAGS, including IF.
+pub unsafe fn resume_interrupt_context(new_rsp: u64) -> ! {
+    unsafe { __freeworld_resume_interrupt_context(new_rsp) }
 }
