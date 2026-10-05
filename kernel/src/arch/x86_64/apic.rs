@@ -279,6 +279,11 @@ pub fn program_periodic_timer(target_hz: u64) -> Result<u32, ApicError> {
 
 pub fn timer_interrupt() {
     APIC_TIMER_TICKS.fetch_add(1, Ordering::AcqRel);
+
+    // Controller completion is part of the timer-entry contract. Any future
+    // scheduler handoff from the timer path must happen only after this EOI,
+    // otherwise the LAPIC can withhold later timer interrupts until the old
+    // task eventually resumes.
     eoi();
 }
 

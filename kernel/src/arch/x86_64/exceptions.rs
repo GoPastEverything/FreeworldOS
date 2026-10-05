@@ -9,7 +9,7 @@ use x86_64::{
 use crate::debug::{events, panic as panic_dump};
 
 use super::{
-    apic, interrupt_context, pic,
+    apic, interrupt_context, pic, timer_entry,
     gdt::{
         DOUBLE_FAULT_IST_INDEX, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX,
     },
@@ -64,7 +64,12 @@ lazy_static! {
             idt[vector].set_handler_fn(pic_spurious_interrupt);
         }
 
-        idt[apic::TIMER_VECTOR].set_handler_fn(apic_timer_interrupt);
+        // SAFETY: timer_entry is a hand-written no-error-code interrupt gate
+        // entry. It saves all GPRs, calls the Rust dispatcher with the exact
+        // 64-bit timer frame, restores the registers and exits with IRETQ.
+        unsafe {
+            idt[apic::TIMER_VECTOR].set_handler_addr(timer_entry::handler_addr());
+        }
         idt[apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_interrupt);
 
         idt
@@ -233,13 +238,6 @@ extern "x86-interrupt" fn page_fault(
 extern "x86-interrupt" fn pic_spurious_interrupt(_stack_frame: InterruptStackFrame) {
     let _scope = interrupt_context::enter();
     serial::println("FreeWorldOS: IRQ: masked legacy PIC vector");
-}
-
-extern "x86-interrupt" fn apic_timer_interrupt(_stack_frame: InterruptStackFrame) {
-    let _scope = interrupt_context::enter();
-    // Interrupt-context invariant: no allocation, locks, serial formatting,
-    // page mapping, or scheduler work. M2 proves only atomic tick delivery.
-    apic::timer_interrupt();
 }
 
 extern "x86-interrupt" fn apic_spurious_interrupt(_stack_frame: InterruptStackFrame) {

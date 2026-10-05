@@ -123,6 +123,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-irq-task-stack-bios.img
 
+      - name: Build timer trap-frame kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c2f-ci-trap-frame-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-timer-trap-frame-bios.img
+
       - name: Validate host debug tools
         shell: bash
         run: |
@@ -440,6 +454,44 @@ jobs:
             || grep -Fq "FreeWorldOS: FATAL" irq-task-stack-serial.log \
             || grep -Fq "FreeWorldOS: EXCEPTION:" irq-task-stack-serial.log; then
             echo "unexpected panic or exception during C2e IRQ-on-task-stack proof" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot timer full-frame same-task IRETQ proof
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-timer-trap-frame-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > timer-trap-frame-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat timer-trap-frame-serial.log
+
+          grep -Fq "FreeWorldOS: M3.5-C2f timer frame: starting same-task iretq proof" timer-trap-frame-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2f timer frame: frame=0xffffa[0-9a-f]+ bytes=160 alignment=ok kind=interrupt in_stack=ok hardware_rsp=ok rsp_delta=160\|168 frame_fields=ok interrupted_if=on all_gprs=ok depth=clear eoi_before_scheduler=locked iret_same_task=ok" timer-trap-frame-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2f trap-frame proof: passed timer_only=ok switch=off" timer-trap-frame-serial.log
+
+          if grep -Fq "KERNEL PANIC" timer-trap-frame-serial.log \
+            || grep -Fq "PANIC REENTRY" timer-trap-frame-serial.log \
+            || grep -Fq "FreeWorldOS: FATAL" timer-trap-frame-serial.log \
+            || grep -Fq "FreeWorldOS: EXCEPTION:" timer-trap-frame-serial.log; then
+            echo "unexpected panic or exception during C2f timer-frame proof" >&2
             exit 1
           fi
 

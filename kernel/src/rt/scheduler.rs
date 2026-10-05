@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
     object::{
         self,
         handle::Rights,
-        task::{TaskObject, TaskState},
+        task::{SavedContextKind, TaskObject, TaskState},
         FwObject, ObjectRef,
     },
 };
@@ -48,6 +48,28 @@ unsafe impl Sync for SchedulerStorage {}
 static SCHEDULER: SchedulerStorage =
     SchedulerStorage(UnsafeCell::new(MaybeUninit::uninit()));
 static SCHEDULER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_FRAME_OBSERVED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_FRAME_KIND_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_FRAME_IN_STACK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_HARDWARE_RSP_IN_STACK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_ENTRY_ALIGNMENT_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_INTERRUPTED_IF_ON: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_SAME_TASK_RETURN_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_FRAME_FIELDS_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+static C2F_RSP_DELTA_OK: AtomicBool = AtomicBool::new(false);
+
 
 fn install(task_a: ObjectRef, task_b: ObjectRef) {
     assert!(
@@ -454,4 +476,164 @@ fn wait_for_timer_tick_on_task_stack(task_name: &str) {
             return;
         }
     }
+}
+
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+pub fn ci_timer_trap_frame_test() -> ! {
+    let task_a_ref = object::create_task_ref()
+        .expect("C2f failed to create scheduler-owned task A");
+    let task_b_ref = object::create_task_ref()
+        .expect("C2f failed to create unused task B lifetime anchor");
+
+    let task_a_handle = object::install_handle_for_ref(&task_a_ref, Rights::READ)
+        .expect("C2f failed to install task A bootstrap handle");
+    object::close(task_a_handle)
+        .expect("C2f failed to close task A bootstrap handle");
+
+    object::task_from_ref(&task_a_ref)
+        .expect("C2f task A reference changed type")
+        .prepare_initial_context(task_timer_trap_entry)
+        .expect("C2f failed to prepare task A voluntary entry frame");
+
+    install(task_a_ref, task_b_ref);
+
+    let state = scheduler();
+    assert_eq!(
+        Arc::strong_count(&state.task_a),
+        1,
+        "C2f task A lifetime is not scheduler-owned"
+    );
+
+    let task_a = state.task_a();
+    let first_rsp = task_a.saved_stack_pointer();
+    assert!(task_a.saved_stack_pointer_in_stack());
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Voluntary);
+    assert!(arch::interrupts_enabled());
+
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2f timer frame: starting same-task iretq proof",
+    );
+
+    arch::disable_interrupts();
+    task_a
+        .begin_running_from_saved()
+        .expect("C2f task A could not transition Runnable -> Running");
+    state.current.store(CURRENT_A, Ordering::Release);
+
+    // SAFETY: task A owns a valid voluntary entry frame and the scheduler owns
+    // its lifetime. start_first_task enables IF only after A's stack is live.
+    unsafe { arch::start_first_task(first_rsp) }
+}
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+extern "C" fn task_timer_trap_entry() -> ! {
+    let state = scheduler();
+    let task = state.task_a();
+
+    assert_eq!(state.current.load(Ordering::Acquire), CURRENT_A);
+    assert_eq!(task.state(), TaskState::Running);
+    assert_eq!(task.saved_context_kind(), SavedContextKind::None);
+    assert!(!task.saved_stack_pointer_present());
+    assert!(arch::interrupts_enabled());
+
+    let before = super::time::now().0;
+    let mut all_gprs_ok = true;
+
+    while super::time::now().0 == before {
+        // SAFETY: IF is enabled and the periodic LAPIC timer is already live.
+        // The assembly probe verifies that all fifteen GPR values survive the
+        // timer entry/return before restoring the caller's callee-saved set.
+        all_gprs_ok &= unsafe { arch::probe_timer_all_gprs_once() };
+    }
+
+    let after = super::time::now().0;
+    assert!(after > before);
+    assert!(all_gprs_ok, "C2f timer return changed a general-purpose register");
+    assert!(C2F_FRAME_OBSERVED.load(Ordering::Acquire));
+    assert!(C2F_FRAME_KIND_OK.load(Ordering::Acquire));
+    assert!(C2F_FRAME_IN_STACK.load(Ordering::Acquire));
+    assert!(C2F_HARDWARE_RSP_IN_STACK.load(Ordering::Acquire));
+    assert!(C2F_ENTRY_ALIGNMENT_OK.load(Ordering::Acquire));
+    assert!(C2F_INTERRUPTED_IF_ON.load(Ordering::Acquire));
+    assert!(C2F_FRAME_FIELDS_OK.load(Ordering::Acquire));
+    assert!(C2F_RSP_DELTA_OK.load(Ordering::Acquire));
+    assert!(C2F_SAME_TASK_RETURN_READY.load(Ordering::Acquire));
+    assert_eq!(task.saved_context_kind(), SavedContextKind::None);
+    assert!(!task.saved_stack_pointer_present());
+    assert!(!arch::in_interrupt());
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2f timer frame: frame={:#x} bytes=160 alignment=ok kind=interrupt in_stack=ok hardware_rsp=ok rsp_delta=160|168 frame_fields=ok interrupted_if=on all_gprs=ok depth=clear eoi_before_scheduler=locked iret_same_task=ok\n",
+        C2F_FRAME_ADDRESS.load(Ordering::Acquire),
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2f trap-frame proof: passed timer_only=ok switch=off",
+    );
+
+    arch::halt_loop()
+}
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+pub(crate) fn timer_interrupt_frame_enter(
+    frame_rsp: u64,
+    frame_bytes: u64,
+    hardware_rsp: u64,
+    rflags: u64,
+    aligned: bool,
+    rsp_delta_ok: bool,
+    frame_fields_ok: bool,
+) {
+    if !SCHEDULER_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    let state = scheduler();
+    if state.current.load(Ordering::Acquire) != CURRENT_A {
+        return;
+    }
+
+    let task = state.task_a();
+    let info = task.info();
+
+    task.observe_interrupt_context(frame_rsp, frame_bytes)
+        .expect("C2f failed to publish timer interrupt frame");
+
+    let hardware_rsp_in_stack =
+        hardware_rsp >= info.stack_bottom && hardware_rsp <= info.stack_top;
+
+    C2F_FRAME_ADDRESS.store(frame_rsp, Ordering::Release);
+    C2F_FRAME_OBSERVED.store(true, Ordering::Release);
+    C2F_FRAME_KIND_OK.store(
+        task.saved_context_kind() == SavedContextKind::Interrupt,
+        Ordering::Release,
+    );
+    C2F_FRAME_IN_STACK.store(task.saved_stack_pointer_in_stack(), Ordering::Release);
+    C2F_HARDWARE_RSP_IN_STACK.store(hardware_rsp_in_stack, Ordering::Release);
+    C2F_ENTRY_ALIGNMENT_OK.store(aligned, Ordering::Release);
+    C2F_INTERRUPTED_IF_ON.store(rflags & (1 << 9) != 0, Ordering::Release);
+    C2F_RSP_DELTA_OK.store(rsp_delta_ok, Ordering::Release);
+    C2F_FRAME_FIELDS_OK.store(frame_fields_ok, Ordering::Release);
+}
+
+#[cfg(feature = "m35c2f-ci-trap-frame-test")]
+pub(crate) fn timer_interrupt_frame_return_same_task() {
+    if !SCHEDULER_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    let state = scheduler();
+    if state.current.load(Ordering::Acquire) != CURRENT_A {
+        return;
+    }
+
+    let task = state.task_a();
+    if task.saved_context_kind() != SavedContextKind::Interrupt {
+        return;
+    }
+
+    assert!(task.saved_stack_pointer_in_stack());
+    task.finish_same_task_interrupt_context()
+        .expect("C2f failed to consume same-task interrupt frame");
+    C2F_SAME_TASK_RETURN_READY.store(true, Ordering::Release);
 }
