@@ -230,7 +230,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::serial::println("FreeWorldOS: M2 APIC timer delivery online; IF enabled");
     arch::serial::println("FreeWorldOS: M1 foundation online");
     arch::serial::println("FreeWorldOS: bootstrap initialization complete");
-    arch::halt_loop()
+    rt::scheduler::start_default_scheduler()
 }
 
 #[alloc_error_handler]
