@@ -211,6 +211,11 @@ jobs:
           grep -Eq "rt: time source online ticks=[1-9][0-9]* period_ns=[1-9][0-9]*" default-boot-serial.log
           grep -Eq "FreeWorldOS: M3.5-C2k default scheduler: queue=online capacity=8 idle_task=[1-9][0-9]* IF=handoff" default-boot-serial.log
           grep -Eq "FreeWorldOS: M3.5-C2k default scheduler: idle=running timer_return=ok tick_before=[0-9]+ tick_after=[1-9][0-9]* queue_empty=ok" default-boot-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2l kernel task: queued task_id=[1-9][0-9]* slot=0 state=runnable dispatch=timer" default-boot-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2l kernel task: running task_id=[1-9][0-9]* slot=0 source=timer idle_saved=interrupt IF=on" default-boot-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2l kernel task: work=complete exit=begin" default-boot-serial.log
+          grep -Fq "FreeWorldOS: scheduler idle reclaimed stopped_tasks=1" default-boot-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2l proof: ordinary_kernel_task=ok timer_dispatch=ok exit=ok off_stack_reclaim=ok idle_resumed=ok priorities=off smp=off" default-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" default-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" default-boot-serial.log             || grep -Fq "FreeWorldOS: EXCEPTION:" default-boot-serial.log; then
             echo "unexpected panic or exception during default M1 boot" >&2
@@ -259,6 +264,11 @@ jobs:
           grep -Eq "rt: time source online ticks=[1-9][0-9]* period_ns=[1-9][0-9]*" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M3.5-C2k default scheduler: queue=online capacity=8 idle_task=[1-9][0-9]* IF=handoff" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M3.5-C2k default scheduler: idle=running timer_return=ok tick_before=[0-9]+ tick_after=[1-9][0-9]* queue_empty=ok" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2l kernel task: queued task_id=[1-9][0-9]* slot=0 state=runnable dispatch=timer" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2l kernel task: running task_id=[1-9][0-9]* slot=0 source=timer idle_saved=interrupt IF=on" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2l kernel task: work=complete exit=begin" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: scheduler idle reclaimed stopped_tasks=1" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2l proof: ordinary_kernel_task=ok timer_dispatch=ok exit=ok off_stack_reclaim=ok idle_resumed=ok priorities=off smp=off" selftest-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" selftest-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" selftest-boot-serial.log; then
             echo "panic or fatal exception detected during M1 self-test boot" >&2
