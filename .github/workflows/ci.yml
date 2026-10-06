@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -275,6 +275,8 @@ jobs:
           grep -Fq "FreeWorldOS: M3.5-C2m task A: resumed b_exit=ok b_reclaimed=ok exit=begin" selftest-boot-serial.log
           test "$(grep -Fc "FreeWorldOS: scheduler idle reclaimed stopped_tasks=1" selftest-boot-serial.log)" -ge 1
           grep -Fq "FreeWorldOS: M3.5-C2m proof: spawn_api=ok tasks=2 timer_dispatch=ok interrupt_resume=ok exits=2 off_stack_reclaim=2 queue_empty=ok idle_resumed=ok priorities=off smp=off" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m4a.vfs_graph" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M4-A VFS graph self-test: passed binary_names=ok exact_lookup=ok ram_file=ok root_identity=ok separators=projection_only" selftest-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" selftest-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" selftest-boot-serial.log; then
             echo "panic or fatal exception detected during M1 self-test boot" >&2

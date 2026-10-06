@@ -71,7 +71,7 @@ docs/
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
 - **M3.5-C:** ◐ C1–C2l merged; C2m adds the production kernel-task spawn API and proves two spawned tasks through timer dispatch, Interrupt resume, safe exit and off-stack reclamation; priorities and SMP remain absent
-- **M4:** VFS namespace graph + RAM filesystem + mount/root projections
+- **M4:** ◐ M4-A adds the first native binary-safe root/directory/file graph with exact segment lookup and RAM-backed file bytes; mount/root projections remain next
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
 - **M7:** PE image decoder and minimal WinFacet DLL/API surface
