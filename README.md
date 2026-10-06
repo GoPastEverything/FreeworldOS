@@ -42,7 +42,7 @@ cargo run -- uefi
 cargo run -- bios
 ```
 
-The first successful boot prints its initialization trace to COM1/QEMU serial output, enters the production scheduler, runs the bootstrap kernel task, and then remains on the scheduler-owned idle task.
+The first successful boot prints its initialization trace to COM1/QEMU serial output, enters the production scheduler, spawns ordinary kernel tasks through the scheduler API, runs and reclaims them, and then remains on the scheduler-owned idle task.
 
 ## Repository layout
 
@@ -70,7 +70,7 @@ docs/
 - **M3:** ✅ deterministic kernel heap + native object + generational handles + rights attenuation + close/reclamation proof
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
-- **M3.5-C:** ◐ C1–C2k merged; C2l enqueues the first ordinary production kernel task, timer-dispatches it from idle, exits it safely, and reclaims its stack off-task; priorities and SMP remain absent
+- **M3.5-C:** ◐ C1–C2l merged; C2m adds the production kernel-task spawn API and proves two spawned tasks through timer dispatch, Interrupt resume, safe exit and off-stack reclamation; priorities and SMP remain absent
 - **M4:** VFS namespace graph + RAM filesystem + mount/root projections
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception

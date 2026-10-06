@@ -11,7 +11,7 @@ use crate::{
         self,
         handle::Rights,
         task::{SavedContextKind, TaskObject, TaskState},
-        FwObject, ObjectRef,
+        FwObject, ObjectError, ObjectRef,
     },
 };
 
@@ -1172,6 +1172,10 @@ impl RunQueue {
         }
     }
 
+    fn has_free_slot(&self) -> bool {
+        self.slots.iter().any(Option::is_none)
+    }
+
     fn enqueue(&mut self, object: ObjectRef) -> usize {
         assert!(
             !arch::interrupts_enabled(),
@@ -1280,11 +1284,77 @@ static RUN_QUEUE: RunQueueStorage =
     RunQueueStorage(UnsafeCell::new(MaybeUninit::uninit()));
 static RUN_QUEUE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-static DEFAULT_KERNEL_TASK_RAN: AtomicBool = AtomicBool::new(false);
-static DEFAULT_KERNEL_TASK_RECLAIMED: AtomicBool = AtomicBool::new(false);
-static DEFAULT_KERNEL_TASK_ID: AtomicU64 = AtomicU64::new(0);
-static DEFAULT_KERNEL_TASK_SLOT: AtomicU64 = AtomicU64::new(u64::MAX);
+static DEFAULT_TASK_A_RAN: AtomicBool = AtomicBool::new(false);
+static DEFAULT_TASK_B_RAN: AtomicBool = AtomicBool::new(false);
+static DEFAULT_TASK_A_RECLAIMED: AtomicBool = AtomicBool::new(false);
+static DEFAULT_TASK_B_RECLAIMED: AtomicBool = AtomicBool::new(false);
+static DEFAULT_TASK_A_ID: AtomicU64 = AtomicU64::new(0);
+static DEFAULT_TASK_B_ID: AtomicU64 = AtomicU64::new(0);
+static DEFAULT_TASK_A_SLOT: AtomicU64 = AtomicU64::new(u64::MAX);
+static DEFAULT_TASK_B_SLOT: AtomicU64 = AtomicU64::new(u64::MAX);
 
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct KernelTaskSpawn {
+    pub id: u64,
+    pub slot: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KernelTaskSpawnError {
+    Object(ObjectError),
+    RunQueueFull,
+}
+
+impl From<ObjectError> for KernelTaskSpawnError {
+    fn from(value: ObjectError) -> Self {
+        Self::Object(value)
+    }
+}
+
+/// Creates, prepares and enqueues one ordinary kernel task.
+///
+/// Allocation and stack preparation happen with IF enabled, but the current
+/// task's preemption-disable depth is raised for the whole operation. Queue
+/// structure is inspected/mutated only in short IF=0 sections.
+pub(crate) fn spawn_kernel_task(
+    entry: extern "C" fn() -> !,
+) -> Result<KernelTaskSpawn, KernelTaskSpawnError> {
+    assert!(
+        RUN_QUEUE_INITIALIZED.load(Ordering::Acquire),
+        "FreeWorld spawn_kernel_task requires an installed scheduler"
+    );
+    assert!(
+        arch::interrupts_enabled(),
+        "FreeWorld spawn_kernel_task requires IF enabled"
+    );
+
+    preemption_disable_current();
+
+    let result = (|| {
+        arch::disable_interrupts();
+        let has_slot = run_queue_mut().has_free_slot();
+        arch::enable_interrupts();
+
+        if !has_slot {
+            return Err(KernelTaskSpawnError::RunQueueFull);
+        }
+
+        let object = object::create_task_ref()?;
+        let task = object::task_from_ref(&object)?;
+        task.prepare_initial_context(entry)?;
+        let id = task.info().id;
+
+        arch::disable_interrupts();
+        let slot = enqueue_prepared_task(object);
+        arch::enable_interrupts();
+
+        Ok(KernelTaskSpawn { id, slot })
+    })();
+
+    preemption_enable_current();
+    result
+}
 
 pub(crate) fn enqueue_prepared_task(object: ObjectRef) -> usize {
     assert!(
@@ -1424,16 +1494,6 @@ pub fn start_default_scheduler() -> ! {
         .prepare_initial_context(default_idle_entry)
         .expect("FreeWorld failed to prepare default idle task");
 
-    let worker = object::create_task_ref()
-        .expect("FreeWorld failed to create default kernel task");
-    let worker_task = object::task_from_ref(&worker)
-        .expect("FreeWorld default kernel task reference changed type");
-    worker_task
-        .prepare_initial_context(default_kernel_task_entry)
-        .expect("FreeWorld failed to prepare default kernel task");
-    let worker_id = worker_task.info().id;
-    DEFAULT_KERNEL_TASK_ID.store(worker_id, Ordering::Release);
-
     assert!(
         arch::interrupts_enabled(),
         "FreeWorld default scheduler expects IF enabled before handoff"
@@ -1443,9 +1503,6 @@ pub fn start_default_scheduler() -> ! {
     install_run_queue(idle);
 
     let queue = run_queue_mut();
-    let worker_slot = queue.enqueue(worker);
-    DEFAULT_KERNEL_TASK_SLOT.store(worker_slot as u64, Ordering::Release);
-
     let idle = queue.idle_task();
     let idle_rsp = idle.saved_stack_pointer();
     let idle_id = idle.info().id;
@@ -1459,35 +1516,27 @@ pub fn start_default_scheduler() -> ! {
         RUN_QUEUE_CAPACITY,
         idle_id,
     ));
-    crate::arch::serial::write_fmt(format_args!(
-        "FreeWorldOS: M3.5-C2l kernel task: queued task_id={} slot={} state=runnable dispatch=timer\n",
-        worker_id,
-        worker_slot,
-    ));
 
-    // SAFETY: The scheduler owns idle and the queued worker. Idle has a
+    // SAFETY: The scheduler owns idle's sole lifetime reference, idle has a
     // validated Voluntary frame on its higher-half task stack, and IF remains
     // clear until start_first_task restores that stack and executes STI.
     unsafe { arch::start_first_task(idle_rsp) }
 }
 
-extern "C" fn default_kernel_task_entry() -> ! {
-    assert!(arch::interrupts_enabled());
+extern "C" fn default_kernel_task_a_entry() -> ! {
+    let slot = DEFAULT_TASK_A_SLOT.load(Ordering::Acquire) as usize;
+    let id = DEFAULT_TASK_A_ID.load(Ordering::Acquire);
 
+    assert!(arch::interrupts_enabled());
     arch::disable_interrupts();
     let queue = run_queue_mut();
-    let slot = queue
-        .current
-        .expect("FreeWorld default kernel task entered while idle was current");
-    let expected_slot = DEFAULT_KERNEL_TASK_SLOT.load(Ordering::Acquire) as usize;
-    assert_eq!(slot, expected_slot);
+    assert_eq!(queue.current, Some(slot));
 
-    let worker = queue.task_at(slot);
-    let worker_id = worker.info().id;
-    assert_eq!(worker_id, DEFAULT_KERNEL_TASK_ID.load(Ordering::Acquire));
-    assert_eq!(worker.state(), TaskState::Running);
-    assert_eq!(worker.saved_context_kind(), SavedContextKind::None);
-    assert!(!worker.saved_stack_pointer_present());
+    let task_a = queue.task_at(slot);
+    assert_eq!(task_a.info().id, id);
+    assert_eq!(task_a.state(), TaskState::Running);
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::None);
+    assert!(!task_a.saved_stack_pointer_present());
 
     let idle = queue.idle_task();
     assert_eq!(idle.state(), TaskState::Runnable);
@@ -1497,42 +1546,142 @@ extern "C" fn default_kernel_task_entry() -> ! {
     arch::enable_interrupts();
 
     assert!(
-        !DEFAULT_KERNEL_TASK_RAN.swap(true, Ordering::AcqRel),
-        "FreeWorld default kernel task entered more than once"
+        !DEFAULT_TASK_A_RAN.swap(true, Ordering::AcqRel),
+        "FreeWorld default task A entered more than once"
     );
 
     crate::arch::serial::write_fmt(format_args!(
-        "FreeWorldOS: M3.5-C2l kernel task: running task_id={} slot={} source=timer idle_saved=interrupt IF=on\n",
-        worker_id,
+        "FreeWorldOS: M3.5-C2m task A: running task_id={} slot={} source=timer idle_saved=interrupt IF=on\n",
+        id,
         slot,
     ));
-    crate::arch::serial::println(
-        "FreeWorldOS: M3.5-C2l kernel task: work=complete exit=begin",
+
+    loop {
+        arch::disable_interrupts();
+        let b_slot = DEFAULT_TASK_B_SLOT.load(Ordering::Acquire) as usize;
+        let b_removed = run_queue_mut().slots[b_slot].is_none();
+        arch::enable_interrupts();
+
+        if b_removed {
+            break;
+        }
+
+        // SAFETY: IF is enabled. If B is preempted before it exits, A may
+        // briefly resume; the queue-slot check sends A back to sleep until B
+        // has actually been removed by exit_current().
+        unsafe {
+            core::arch::asm!("hlt", options(nostack, preserves_flags));
+        }
+    }
+
+    assert!(DEFAULT_TASK_B_RAN.load(Ordering::Acquire));
+    let cleaned = drain_cleanup_from_live_stack();
+    assert_eq!(cleaned, 1, "FreeWorld task A did not reclaim exactly task B");
+    assert!(
+        !DEFAULT_TASK_B_RECLAIMED.swap(true, Ordering::AcqRel),
+        "FreeWorld task B was reclaimed more than once"
     );
 
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2m task A: resumed b_exit=ok b_reclaimed=ok exit=begin",
+    );
+    exit_current()
+}
+
+extern "C" fn default_kernel_task_b_entry() -> ! {
+    let slot = DEFAULT_TASK_B_SLOT.load(Ordering::Acquire) as usize;
+    let id = DEFAULT_TASK_B_ID.load(Ordering::Acquire);
+
+    assert!(arch::interrupts_enabled());
+    arch::disable_interrupts();
+    let queue = run_queue_mut();
+    assert_eq!(queue.current, Some(slot));
+
+    let task_b = queue.task_at(slot);
+    assert_eq!(task_b.info().id, id);
+    assert_eq!(task_b.state(), TaskState::Running);
+    assert_eq!(task_b.saved_context_kind(), SavedContextKind::None);
+    assert!(!task_b.saved_stack_pointer_present());
+
+    let a_slot = DEFAULT_TASK_A_SLOT.load(Ordering::Acquire) as usize;
+    let task_a = queue.task_at(a_slot);
+    assert_eq!(task_a.state(), TaskState::Runnable);
+    assert_eq!(task_a.saved_context_kind(), SavedContextKind::Interrupt);
+    assert!(task_a.saved_stack_pointer_present());
+    assert!(task_a.saved_stack_pointer_in_stack());
+    arch::enable_interrupts();
+
+    assert!(
+        !DEFAULT_TASK_B_RAN.swap(true, Ordering::AcqRel),
+        "FreeWorld default task B entered more than once"
+    );
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2m task B: running task_id={} slot={} source=timer a_saved=interrupt IF=on\n",
+        id,
+        slot,
+    ));
+
+    crate::arch::serial::println(
+        "FreeWorldOS: M3.5-C2m task B: work=complete exit=begin",
+    );
     exit_current()
 }
 
 extern "C" fn default_idle_entry() -> ! {
     assert!(arch::interrupts_enabled());
 
+    // Batch the two default spawns so neither task can run before both queue
+    // entries and their proof metadata are published. spawn_kernel_task nests
+    // its own preemption-disable section, so this remains safe and composable.
+    preemption_disable_current();
+
+    let spawn_a = spawn_kernel_task(default_kernel_task_a_entry)
+        .expect("FreeWorld failed to spawn default kernel task A");
+    let spawn_b = spawn_kernel_task(default_kernel_task_b_entry)
+        .expect("FreeWorld failed to spawn default kernel task B");
+
+    assert_eq!(spawn_a.slot, 0);
+    assert_eq!(spawn_b.slot, 1);
+
+    DEFAULT_TASK_A_ID.store(spawn_a.id, Ordering::Release);
+    DEFAULT_TASK_B_ID.store(spawn_b.id, Ordering::Release);
+    DEFAULT_TASK_A_SLOT.store(spawn_a.slot as u64, Ordering::Release);
+    DEFAULT_TASK_B_SLOT.store(spawn_b.slot as u64, Ordering::Release);
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2m spawn: task=A task_id={} slot={} api=spawn_kernel_task\n",
+        spawn_a.id,
+        spawn_a.slot,
+    ));
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M3.5-C2m spawn: task=B task_id={} slot={} api=spawn_kernel_task\n",
+        spawn_b.id,
+        spawn_b.slot,
+    ));
+
+    preemption_enable_current();
+
     let before = super::time::now().0;
-    let mut timer_return_proven = false;
+    let mut final_proof_printed = false;
 
     loop {
         let cleaned = drain_cleanup_from_live_stack();
         if cleaned != 0 {
-            if DEFAULT_KERNEL_TASK_RAN.load(Ordering::Acquire) {
-                assert_eq!(
-                    cleaned,
-                    1,
-                    "FreeWorld default idle reclaimed an unexpected task count"
-                );
-                assert!(
-                    !DEFAULT_KERNEL_TASK_RECLAIMED.swap(true, Ordering::AcqRel),
-                    "FreeWorld default kernel task was reclaimed more than once"
-                );
-            }
+            assert!(
+                DEFAULT_TASK_A_RAN.load(Ordering::Acquire)
+                    && DEFAULT_TASK_B_RAN.load(Ordering::Acquire),
+                "FreeWorld idle reclaimed a default task before both ran"
+            );
+            assert!(
+                DEFAULT_TASK_B_RECLAIMED.load(Ordering::Acquire),
+                "FreeWorld idle saw deferred cleanup before task A reclaimed B"
+            );
+            assert_eq!(cleaned, 1, "FreeWorld idle did not reclaim exactly task A");
+            assert!(
+                !DEFAULT_TASK_A_RECLAIMED.swap(true, Ordering::AcqRel),
+                "FreeWorld task A was reclaimed more than once"
+            );
 
             crate::arch::serial::write_fmt(format_args!(
                 "FreeWorldOS: scheduler idle reclaimed stopped_tasks={}\n",
@@ -1540,32 +1689,33 @@ extern "C" fn default_idle_entry() -> ! {
             ));
         }
 
-        if !timer_return_proven {
+        if !final_proof_printed
+            && DEFAULT_TASK_A_RECLAIMED.load(Ordering::Acquire)
+            && DEFAULT_TASK_B_RECLAIMED.load(Ordering::Acquire)
+        {
             let after = super::time::now().0;
-            if after > before {
-                arch::disable_interrupts();
-                let queue = run_queue_mut();
-                assert!(queue.current.is_none());
-                assert!(queue.runnable_empty());
-                assert_eq!(queue.idle_task().state(), TaskState::Running);
-                assert!(DEFAULT_KERNEL_TASK_RAN.load(Ordering::Acquire));
-                assert!(DEFAULT_KERNEL_TASK_RECLAIMED.load(Ordering::Acquire));
-                arch::enable_interrupts();
+            assert!(after > before);
 
-                crate::arch::serial::write_fmt(format_args!(
-                    "FreeWorldOS: M3.5-C2k default scheduler: idle=running timer_return=ok tick_before={} tick_after={} queue_empty=ok\n",
-                    before,
-                    after,
-                ));
-                crate::arch::serial::println(
-                    "FreeWorldOS: M3.5-C2l proof: ordinary_kernel_task=ok timer_dispatch=ok exit=ok off_stack_reclaim=ok idle_resumed=ok priorities=off smp=off",
-                );
-                timer_return_proven = true;
-            }
+            arch::disable_interrupts();
+            let queue = run_queue_mut();
+            assert!(queue.current.is_none());
+            assert!(queue.runnable_empty());
+            assert_eq!(queue.idle_task().state(), TaskState::Running);
+            arch::enable_interrupts();
+
+            crate::arch::serial::write_fmt(format_args!(
+                "FreeWorldOS: M3.5-C2k default scheduler: idle=running timer_return=ok tick_before={} tick_after={} queue_empty=ok\n",
+                before,
+                after,
+            ));
+            crate::arch::serial::println(
+                "FreeWorldOS: M3.5-C2m proof: spawn_api=ok tasks=2 timer_dispatch=ok interrupt_resume=ok exits=2 off_stack_reclaim=2 queue_empty=ok idle_resumed=ok priorities=off smp=off",
+            );
+            final_proof_printed = true;
         }
 
-        // SAFETY: IF is enabled. With no ordinary runnable tasks the timer
-        // accounts/EOIs and IRETQs back to this scheduler-owned idle stack.
+        // SAFETY: IF is enabled. With no ordinary runnable tasks after the
+        // proof, the timer accounts/EOIs and returns to this idle stack.
         unsafe {
             core::arch::asm!("hlt", options(nostack, preserves_flags));
         }
