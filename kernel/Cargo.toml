@@ -25,6 +25,7 @@ m35c2e-ci-irq-stack-test = []
 m35c2f-ci-trap-frame-test = []
 m35c2g-ci-resume-interrupt-test = []
 m35c2i-ci-preempt-test = []
+m35c2j-ci-run-queue-test = []
 
 [dependencies]
 bootloader_api = "=0.11.17"

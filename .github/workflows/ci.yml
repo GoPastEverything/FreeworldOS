@@ -165,6 +165,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-timer-round-robin-bios.img
 
+      - name: Build variable run-queue scheduler image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m35c2j-ci-run-queue-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-run-queue-bios.img
+
       - name: Validate host debug tools
         shell: bash
         run: |
@@ -597,6 +611,44 @@ jobs:
             || grep -Fq "FreeWorldOS: FATAL" timer-round-robin-serial.log \
             || grep -Fq "FreeWorldOS: EXCEPTION:" timer-round-robin-serial.log; then
             echo "unexpected panic or exception during C2i timer preemption proof" >&2
+            exit 1
+          fi
+
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "unexpected QEMU status: $QEMU_STATUS" >&2
+            exit "$QEMU_STATUS"
+          fi
+
+
+      - name: Boot variable run-queue proof
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          timeout --signal=TERM --kill-after=2s 10s \
+            qemu-system-x86_64 \
+              -drive "format=raw,file=target/ci/freeworldos-run-queue-bios.img" \
+              -serial stdio \
+              -display none \
+              -no-reboot \
+              -no-shutdown \
+              -m 256M \
+            > run-queue-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+
+          cat run-queue-serial.log
+
+          grep -Fq "FreeWorldOS: M3.5-C2j run queue: starting A->B->C rotation capacity=8" run-queue-serial.log
+          grep -Eq "FreeWorldOS: M3.5-C2j run queue: rotation=A>B>C>A switches=[0-9]+ A_runs=[0-9]+ B_runs=[0-9]+ C_runs=[0-9]+ preempt_blocked_ticks=[1-9][0-9]* exits=3 cleaned=3 idle=running queue=empty capacity=8 mutation_if=off" run-queue-serial.log
+          grep -Fq "FreeWorldOS: M3.5-C2j proof: passed variable_queue=ok three_tasks=ok preempt_disable=ok deferred_cleanup=ok idle=ok priorities=off smp=off" run-queue-serial.log
+
+          if grep -Fq "KERNEL PANIC" run-queue-serial.log \
+            || grep -Fq "PANIC REENTRY" run-queue-serial.log \
+            || grep -Fq "FreeWorldOS: FATAL" run-queue-serial.log \
+            || grep -Fq "FreeWorldOS: EXCEPTION:" run-queue-serial.log; then
+            echo "unexpected panic or exception during C2j run-queue proof" >&2
             exit 1
           fi
 
