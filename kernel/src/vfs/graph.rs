@@ -60,7 +60,6 @@ enum NodePayload {
 }
 
 struct Node {
-    id: NodeId,
     parent: Option<NodeId>,
     name: Option<OwnedName>,
     payload: NodePayload,
@@ -68,7 +67,7 @@ struct Node {
 
 impl Node {
     fn kind(&self) -> NodeKind {
-        match self.payload {
+        match &self.payload {
             NodePayload::Directory { .. } => NodeKind::Directory,
             NodePayload::File { .. } => NodeKind::File,
         }
@@ -85,7 +84,6 @@ impl VfsGraph {
         let root = NodeId(1);
         let mut nodes = Vec::new();
         nodes.push(Node {
-            id: root,
             parent: None,
             name: None,
             payload: NodePayload::Directory {
@@ -120,7 +118,6 @@ impl VfsGraph {
         self.ensure_child_name_available(parent, owned.as_name())?;
 
         let id = self.allocate_node(Node {
-            id: NodeId(0),
             parent: Some(parent),
             name: Some(owned),
             payload: NodePayload::Directory {
@@ -142,7 +139,6 @@ impl VfsGraph {
         self.ensure_child_name_available(parent, owned.as_name())?;
 
         let id = self.allocate_node(Node {
-            id: NodeId(0),
             parent: Some(parent),
             name: Some(owned),
             payload: NodePayload::File { bytes: Vec::new() },
@@ -213,9 +209,8 @@ impl VfsGraph {
         Ok(self.node(id)?.parent)
     }
 
-    fn allocate_node(&mut self, mut node: Node) -> NodeId {
+    fn allocate_node(&mut self, node: Node) -> NodeId {
         let id = NodeId((self.nodes.len() + 1) as u64);
-        node.id = id;
         self.nodes.push(node);
         id
     }
