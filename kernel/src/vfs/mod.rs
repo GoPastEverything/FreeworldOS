@@ -210,10 +210,20 @@ static M4C_LINUX_ROOT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "m4c-ci-self-test")]
 static M4C_WINDOWS_C_ROOT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "m4e-ci-self-test")]
+static M4E_WINDOWS_FILE_ID: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(feature = "m4b-ci-self-test")]
 const M4B_WRITER_BYTES: [u8; 7] = [0x00, 0x46, 0x57, 0xff, 0x10, 0x20, 0x30];
 #[cfg(feature = "m4b-ci-self-test")]
 const M4B_READER_BYTES: [u8; 7] = [0x00, 0x4d, 0x34, 0x42, 0xfe, 0x99, 0x01];
+
+#[cfg(feature = "m4e-ci-self-test")]
+const M4E_WINDOWS_NAME_WTF8: [u8; 11] = [
+    b'w', b'i', b'n', b'-', 0xed, 0xa0, 0x80, b'.', b'd', b'a', b't',
+];
+#[cfg(feature = "m4e-ci-self-test")]
+const M4E_WINDOWS_BYTES: [u8; 5] = [0x57, 0x49, 0x4e, 0x00, 0xee];
 
 #[cfg(feature = "m4b-ci-self-test")]
 pub(crate) fn install_ci_scheduler_hook() {
@@ -293,6 +303,21 @@ extern "C" fn ci_vfs_writer() -> ! {
             dir.0,
             linux.0,
             windows.0,
+        ));
+    }
+
+    #[cfg(feature = "m4e-ci-self-test")]
+    {
+        let windows_file = create_file(dir, Name::wtf8(&M4E_WINDOWS_NAME_WTF8))
+            .expect("M4-E failed to create WTF-8 Windows-origin file");
+        write_file(windows_file, &M4E_WINDOWS_BYTES)
+            .expect("M4-E failed to write Windows-origin file");
+        M4E_WINDOWS_FILE_ID.store(windows_file.0, Ordering::Release);
+
+        crate::arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M4-E writer: windows_file={} wtf8_unpaired_surrogate=stored bytes={}\n",
+            windows_file.0,
+            M4E_WINDOWS_NAME_WTF8.len(),
         ));
     }
 
@@ -408,6 +433,85 @@ extern "C" fn ci_vfs_reader() -> ! {
 
         crate::arch::serial::write_fmt(format_args!(
             "FreeWorldOS: M4-D Linux path proof: input_hex=2f73746174655c62696e file_node={} raw_bytes=ok backslash=data repeated_slash=collapsed dot_traversal=refused\n",
+            parsed_resolved.0,
+        ));
+    }
+
+    #[cfg(feature = "m4e-ci-self-test")]
+    {
+        use projection_path::{
+            parse_windows_drive_absolute,
+            WindowsPathError,
+        };
+
+        const WINDOWS_PATH: [u16; 14] = [
+            b'C' as u16,
+            b':' as u16,
+            b'\\' as u16,
+            b'w' as u16,
+            b'i' as u16,
+            b'n' as u16,
+            b'-' as u16,
+            0xd800,
+            b'.' as u16,
+            b'd' as u16,
+            b'a' as u16,
+            b't' as u16,
+            0, // removed from the slice below; sentinel proves length discipline
+            0,
+        ];
+
+        let parsed = parse_windows_drive_absolute(&WINDOWS_PATH[..12])
+            .expect("M4-E failed to parse Windows DOS absolute path");
+        assert_eq!(parsed.root, ProjectionRoot::WindowsDrive(b'C'));
+
+        let parsed_resolved = resolve_projection_path(&parsed)
+            .expect("M4-E parsed Windows path failed to resolve");
+        assert_eq!(
+            parsed_resolved.0,
+            M4E_WINDOWS_FILE_ID.load(Ordering::Acquire)
+        );
+
+        let windows_bytes = read_file_copy(parsed_resolved)
+            .expect("M4-E failed to read Windows-origin file");
+        assert_eq!(windows_bytes.as_slice(), M4E_WINDOWS_BYTES.as_slice());
+
+        const LOWERCASE_DRIVE: [u16; 4] = [
+            b'c' as u16,
+            b':' as u16,
+            b'\\' as u16,
+            b'/' as u16,
+        ];
+        let lower = parse_windows_drive_absolute(&LOWERCASE_DRIVE)
+            .expect("M4-E failed to normalize lowercase drive");
+        assert_eq!(lower.root, ProjectionRoot::WindowsDrive(b'C'));
+
+        const DRIVE_RELATIVE: [u16; 5] = [
+            b'C' as u16,
+            b':' as u16,
+            b'f' as u16,
+            b'o' as u16,
+            b'o' as u16,
+        ];
+        assert_eq!(
+            parse_windows_drive_absolute(&DRIVE_RELATIVE),
+            Err(WindowsPathError::NotDriveAbsolute)
+        );
+
+        const DOT_PATH: [u16; 5] = [
+            b'C' as u16,
+            b':' as u16,
+            b'\\' as u16,
+            b'.' as u16,
+            b'\\' as u16,
+        ];
+        assert_eq!(
+            parse_windows_drive_absolute(&DOT_PATH),
+            Err(WindowsPathError::UnsupportedTraversal)
+        );
+
+        crate::arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M4-E Windows path proof: drive=C file_node={} utf16=ok wtf8_unpaired_surrogate=ok lowercase_drive=normalized dot_traversal=refused\n",
             parsed_resolved.0,
         ));
     }

@@ -30,6 +30,7 @@ m4a-ci-self-test = ["kernel/m4a-ci-self-test"]
 m4b-ci-self-test = ["kernel/m4b-ci-self-test"]
 m4c-ci-self-test = ["kernel/m4c-ci-self-test"]
 m4d-ci-self-test = ["kernel/m4d-ci-self-test"]
+m4e-ci-self-test = ["kernel/m4e-ci-self-test"]
 
 [dependencies]
 ovmf-prebuilt = "=0.2.9"
