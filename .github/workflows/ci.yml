@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -284,6 +284,8 @@ jobs:
           grep -Eq "FreeWorldOS: M4-C roots: native_node=[1-9][0-9]* linux_root=[1-9][0-9]* windows_c_root=[1-9][0-9]* aliases=explicit" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M4-C projection proof: linux_root=[1-9][0-9]* windows_c_root=[1-9][0-9]* file_node=[1-9][0-9]* same_native_object=ok explicit_visibility=ok" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M4-D Linux path proof: input_hex=2f73746174655c62696e file_node=[1-9][0-9]* raw_bytes=ok backslash=data repeated_slash=collapsed dot_traversal=refused" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M4-E writer: windows_file=[1-9][0-9]* wtf8_unpaired_surrogate=stored bytes=11" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M4-E Windows path proof: drive=C file_node=[1-9][0-9]* utf16=ok wtf8_unpaired_surrogate=ok lowercase_drive=normalized dot_traversal=refused" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: scheduler idle reclaimed stopped_tasks=2" selftest-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" selftest-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" selftest-boot-serial.log; then
