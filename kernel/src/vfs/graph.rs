@@ -178,8 +178,19 @@ impl VfsGraph {
             return Err(VfsError::UnknownRoot);
         }
 
-        let mut current = self.root;
-        for segment in path.segments {
+        self.resolve_from(self.root, path.segments)
+    }
+
+    pub fn resolve_from(
+        &self,
+        start: NodeId,
+        segments: &[Name<'_>],
+    ) -> Result<NodeId, VfsError> {
+        // Validate the start identity before accepting an empty segment list.
+        self.node(start)?;
+
+        let mut current = start;
+        for segment in segments {
             current = self.lookup_child(current, *segment)?;
         }
         Ok(current)

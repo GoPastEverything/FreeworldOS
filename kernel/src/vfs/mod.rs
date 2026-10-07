@@ -9,12 +9,19 @@ use core::{
 pub mod graph;
 pub mod namespace;
 pub mod path;
+pub mod roots;
 
 use graph::{NodeId, VfsError, VfsGraph};
 use namespace::NamePolicy;
 use path::{Name, Path, RootHandle};
+use roots::{ProjectionRoot, RootBindError, RootTable};
 
-struct GlobalVfsStorage(UnsafeCell<MaybeUninit<VfsGraph>>);
+struct VfsState {
+    graph: VfsGraph,
+    roots: RootTable,
+}
+
+struct GlobalVfsStorage(UnsafeCell<MaybeUninit<VfsState>>);
 
 // SAFETY: M4-B remains bootstrap-CPU-only. Scheduled-task access is serialized
 // by the current task's preemption-disable depth; no interrupt handler accesses
@@ -28,7 +35,7 @@ static GLOBAL_VFS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 struct GlobalVfsGuard;
 
 impl Deref for GlobalVfsGuard {
-    type Target = VfsGraph;
+    type Target = VfsState;
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: init publishes the graph before GLOBAL_VFS_INITIALIZED.
@@ -72,10 +79,12 @@ pub fn init() {
     );
 
     let graph = VfsGraph::new(NamePolicy::CaseSensitive);
+    let roots = RootTable::new(graph.root_handle(), graph.root_id());
+    let state = VfsState { graph, roots };
 
     // SAFETY: bootstrap initialization runs once before scheduler publication.
     unsafe {
-        (*GLOBAL_VFS.0.get()).write(graph);
+        (*GLOBAL_VFS.0.get()).write(state);
     }
     GLOBAL_VFS_INITIALIZED.store(true, Ordering::Release);
 
@@ -85,13 +94,16 @@ pub fn init() {
 }
 
 pub(crate) fn root_handle() -> RootHandle {
-    let graph = global_graph();
-    graph.root_handle()
+    let state = global_graph();
+    state
+        .roots
+        .handle_for(ProjectionRoot::Native)
+        .expect("FreeWorld native VFS root binding disappeared")
 }
 
 pub(crate) fn root_id() -> NodeId {
-    let graph = global_graph();
-    graph.root_id()
+    let state = global_graph();
+    state.graph.root_id()
 }
 
 pub(crate) fn create_directory(
@@ -100,7 +112,7 @@ pub(crate) fn create_directory(
     policy: NamePolicy,
 ) -> Result<NodeId, VfsError> {
     let mut graph = global_graph();
-    graph.create_directory(parent, name, policy)
+    graph.graph.create_directory(parent, name, policy)
 }
 
 pub(crate) fn create_file(
@@ -108,22 +120,58 @@ pub(crate) fn create_file(
     name: Name<'_>,
 ) -> Result<NodeId, VfsError> {
     let mut graph = global_graph();
-    graph.create_file(parent, name)
+    graph.graph.create_file(parent, name)
 }
 
 pub(crate) fn write_file(id: NodeId, bytes: &[u8]) -> Result<(), VfsError> {
     let mut graph = global_graph();
-    graph.write_file(id, bytes)
+    graph.graph.write_file(id, bytes)
 }
 
 pub(crate) fn read_file_copy(id: NodeId) -> Result<Vec<u8>, VfsError> {
     let graph = global_graph();
-    Ok(graph.read_file(id)?.to_vec())
+    Ok(graph.graph.read_file(id)?.to_vec())
 }
 
 pub(crate) fn resolve(path: &Path<'_>) -> Result<NodeId, VfsError> {
-    let graph = global_graph();
-    graph.resolve(path)
+    let state = global_graph();
+    let start = state
+        .roots
+        .node_for_handle(path.root)
+        .ok_or(VfsError::UnknownRoot)?;
+    state.graph.resolve_from(start, path.segments)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ProjectionBindError {
+    Vfs(VfsError),
+    Root(RootBindError),
+}
+
+impl From<VfsError> for ProjectionBindError {
+    fn from(value: VfsError) -> Self {
+        Self::Vfs(value)
+    }
+}
+
+impl From<RootBindError> for ProjectionBindError {
+    fn from(value: RootBindError) -> Self {
+        Self::Root(value)
+    }
+}
+
+pub(crate) fn bind_projection_root(
+    node: NodeId,
+    projection: ProjectionRoot,
+) -> Result<RootHandle, ProjectionBindError> {
+    let mut state = global_graph();
+    state.graph.node_kind(node)?;
+    Ok(state.roots.bind(node, projection)?)
+}
+
+pub(crate) fn projection_root(projection: ProjectionRoot) -> Option<RootHandle> {
+    let state = global_graph();
+    state.roots.handle_for(projection)
 }
 
 #[cfg(feature = "m4b-ci-self-test")]
@@ -134,6 +182,11 @@ static M4B_READER_DONE: AtomicBool = AtomicBool::new(false);
 static M4B_DIR_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "m4b-ci-self-test")]
 static M4B_FILE_ID: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "m4c-ci-self-test")]
+static M4C_LINUX_ROOT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m4c-ci-self-test")]
+static M4C_WINDOWS_C_ROOT: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "m4b-ci-self-test")]
 const M4B_WRITER_BYTES: [u8; 7] = [0x00, 0x46, 0x57, 0xff, 0x10, 0x20, 0x30];
@@ -188,6 +241,39 @@ extern "C" fn ci_vfs_writer() -> ! {
 
     M4B_DIR_ID.store(dir.0, Ordering::Release);
     M4B_FILE_ID.store(file.0, Ordering::Release);
+
+    #[cfg(feature = "m4c-ci-self-test")]
+    {
+        let linux = bind_projection_root(dir, ProjectionRoot::LinuxRoot)
+            .expect("M4-C failed to bind Linux root");
+        let windows = bind_projection_root(dir, ProjectionRoot::WindowsDrive(b'C'))
+            .expect("M4-C failed to bind Windows C root");
+
+        assert_ne!(linux, windows);
+        assert_eq!(
+            projection_root(ProjectionRoot::LinuxRoot),
+            Some(linux)
+        );
+        assert_eq!(
+            projection_root(ProjectionRoot::WindowsDrive(b'C')),
+            Some(windows)
+        );
+        assert_eq!(
+            bind_projection_root(dir, ProjectionRoot::WindowsDrive(b'C')),
+            Err(ProjectionBindError::Root(RootBindError::DuplicateProjection))
+        );
+
+        M4C_LINUX_ROOT.store(linux.0, Ordering::Release);
+        M4C_WINDOWS_C_ROOT.store(windows.0, Ordering::Release);
+
+        crate::arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M4-C roots: native_node={} linux_root={} windows_c_root={} aliases=explicit\n",
+            dir.0,
+            linux.0,
+            windows.0,
+        ));
+    }
+
     M4B_WRITER_DONE.store(true, Ordering::Release);
 
     crate::arch::serial::write_fmt(format_args!(
@@ -240,6 +326,35 @@ extern "C" fn ci_vfs_reader() -> ! {
         .expect("M4-B reader failed to read file parent");
     assert_eq!(dir.0, M4B_DIR_ID.load(Ordering::Acquire));
 
+    #[cfg(feature = "m4c-ci-self-test")]
+    {
+        let projection_segments = [file_name];
+
+        let linux_path = Path {
+            root: RootHandle(M4C_LINUX_ROOT.load(Ordering::Acquire)),
+            segments: &projection_segments,
+        };
+        let windows_path = Path {
+            root: RootHandle(M4C_WINDOWS_C_ROOT.load(Ordering::Acquire)),
+            segments: &projection_segments,
+        };
+
+        let linux_resolved = resolve(&linux_path)
+            .expect("M4-C Linux projection failed to resolve shared file");
+        let windows_resolved = resolve(&windows_path)
+            .expect("M4-C Windows projection failed to resolve shared file");
+
+        assert_eq!(linux_resolved, resolved);
+        assert_eq!(windows_resolved, resolved);
+
+        crate::arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M4-C projection proof: linux_root={} windows_c_root={} file_node={} same_native_object=ok explicit_visibility=ok\n",
+            linux_path.root.0,
+            windows_path.root.0,
+            resolved.0,
+        ));
+    }
+
     let bytes = read_file_copy(resolved)
         .expect("M4-B reader failed to read writer-created file");
     assert_eq!(bytes.as_slice(), M4B_WRITER_BYTES.as_slice());
@@ -261,5 +376,5 @@ extern "C" fn ci_vfs_reader() -> ! {
 #[cfg(feature = "m4b-ci-self-test")]
 fn graph_parent_for_ci(id: NodeId) -> Result<NodeId, VfsError> {
     let graph = global_graph();
-    graph.parent(id)?.ok_or(VfsError::NodeNotFound)
+    graph.graph.parent(id)?.ok_or(VfsError::NodeNotFound)
 }
