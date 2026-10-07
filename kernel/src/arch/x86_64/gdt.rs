@@ -197,8 +197,17 @@ pub fn ci_self_test() {
             && crate::memory::address_space::is_kernel_address(top - 1),
         "FreeWorld TSS RSP0 stack escaped the kernel half"
     );
+    // TaskStateSegment is packed. Do not create a reference to its u64-sized
+    // privilege_stack_table field; read RSP0 through a raw pointer instead.
+    let tss_ptr: *const TaskStateSegment = &*TSS;
+    let rsp0_ptr = unsafe {
+        core::ptr::addr_of!((*tss_ptr).privilege_stack_table)
+            .cast::<VirtAddr>()
+            .add(TSS_RING0_PRIVILEGE_LEVEL_INDEX)
+    };
+    let loaded_rsp0 = unsafe { rsp0_ptr.read_unaligned() };
     assert_eq!(
-        TSS.privilege_stack_table[TSS_RING0_PRIVILEGE_LEVEL_INDEX],
+        loaded_rsp0,
         ring0_privilege_stack_top(),
         "FreeWorld TSS RSP0 does not reference the privilege stack"
     );
