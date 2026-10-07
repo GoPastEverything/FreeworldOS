@@ -31,6 +31,7 @@ m4b-ci-self-test = []
 m4c-ci-self-test = ["m4b-ci-self-test"]
 m4d-ci-self-test = ["m4c-ci-self-test"]
 m4e-ci-self-test = ["m4d-ci-self-test"]
+m5a-ci-self-test = []
 
 [dependencies]
 bootloader_api = "=0.11.17"
