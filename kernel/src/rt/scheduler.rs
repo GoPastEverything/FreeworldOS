@@ -1284,6 +1284,43 @@ static RUN_QUEUE: RunQueueStorage =
     RunQueueStorage(UnsafeCell::new(MaybeUninit::uninit()));
 static RUN_QUEUE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+struct IdleHookStorage(UnsafeCell<Option<fn()>>);
+
+// SAFETY: The hook is installed once before the production scheduler starts,
+// then only read by the bootstrap CPU's idle task. SMP is not enabled.
+unsafe impl Sync for IdleHookStorage {}
+
+static IDLE_HOOK: IdleHookStorage = IdleHookStorage(UnsafeCell::new(None));
+static IDLE_HOOK_FIRED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn install_idle_hook(hook: fn()) {
+    assert!(
+        !RUN_QUEUE_INITIALIZED.load(Ordering::Acquire),
+        "FreeWorld idle hook must be installed before the scheduler starts"
+    );
+    assert!(
+        !IDLE_HOOK_FIRED.load(Ordering::Acquire),
+        "FreeWorld idle hook already fired"
+    );
+
+    // SAFETY: bootstrap CPU only; install occurs before scheduler publication.
+    unsafe {
+        *IDLE_HOOK.0.get() = Some(hook);
+    }
+}
+
+fn run_idle_hook_once() {
+    if IDLE_HOOK_FIRED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    // SAFETY: the hook slot is immutable after scheduler installation.
+    let hook = unsafe { *IDLE_HOOK.0.get() };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 static DEFAULT_TASK_A_RAN: AtomicBool = AtomicBool::new(false);
 static DEFAULT_TASK_B_RAN: AtomicBool = AtomicBool::new(false);
 static DEFAULT_TASK_A_RECLAIMED: AtomicBool = AtomicBool::new(false);
@@ -1668,20 +1705,22 @@ extern "C" fn default_idle_entry() -> ! {
     loop {
         let cleaned = drain_cleanup_from_live_stack();
         if cleaned != 0 {
-            assert!(
-                DEFAULT_TASK_A_RAN.load(Ordering::Acquire)
-                    && DEFAULT_TASK_B_RAN.load(Ordering::Acquire),
-                "FreeWorld idle reclaimed a default task before both ran"
-            );
-            assert!(
-                DEFAULT_TASK_B_RECLAIMED.load(Ordering::Acquire),
-                "FreeWorld idle saw deferred cleanup before task A reclaimed B"
-            );
-            assert_eq!(cleaned, 1, "FreeWorld idle did not reclaim exactly task A");
-            assert!(
-                !DEFAULT_TASK_A_RECLAIMED.swap(true, Ordering::AcqRel),
-                "FreeWorld task A was reclaimed more than once"
-            );
+            if !DEFAULT_TASK_A_RECLAIMED.load(Ordering::Acquire) {
+                assert!(
+                    DEFAULT_TASK_A_RAN.load(Ordering::Acquire)
+                        && DEFAULT_TASK_B_RAN.load(Ordering::Acquire),
+                    "FreeWorld idle reclaimed a default task before both ran"
+                );
+                assert!(
+                    DEFAULT_TASK_B_RECLAIMED.load(Ordering::Acquire),
+                    "FreeWorld idle saw deferred cleanup before task A reclaimed B"
+                );
+                assert_eq!(cleaned, 1, "FreeWorld idle did not reclaim exactly task A");
+                assert!(
+                    !DEFAULT_TASK_A_RECLAIMED.swap(true, Ordering::AcqRel),
+                    "FreeWorld task A was reclaimed more than once"
+                );
+            }
 
             crate::arch::serial::write_fmt(format_args!(
                 "FreeWorldOS: scheduler idle reclaimed stopped_tasks={}\n",
@@ -1712,6 +1751,7 @@ extern "C" fn default_idle_entry() -> ! {
                 "FreeWorldOS: M3.5-C2m proof: spawn_api=ok tasks=2 timer_dispatch=ok interrupt_resume=ok exits=2 off_stack_reclaim=2 queue_empty=ok idle_resumed=ok priorities=off smp=off",
             );
             final_proof_printed = true;
+            run_idle_hook_once();
         }
 
         // SAFETY: IF is enabled. With no ordinary runnable tasks after the
