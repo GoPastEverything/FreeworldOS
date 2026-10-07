@@ -71,7 +71,7 @@ docs/
 - **M3.5-A:** ✅ physical-frame return/reuse stack + always-on frame-state bitmap + reuse CI proof
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
 - **M3.5-C:** ◐ C1–C2l merged; C2m adds the production kernel-task spawn API and proves two spawned tasks through timer dispatch, Interrupt resume, safe exit and off-stack reclamation; priorities and SMP remain absent
-- **M4:** ◐ M4-A native graph merged; M4-B adds the persistent production namespace; M4-C adds explicit Linux-root and Windows-drive root bindings that alias the same native NodeId graph; path parsers and case-folding remain later
+- **M4:** ◐ M4-A/B establish the persistent native graph; M4-C adds explicit root aliases; M4-D adds the Linux absolute byte-path decoder over LinuxRoot while preserving backslash as filename data and refusing unresolved dot traversal
 - **M5:** user mode + syscall/trap ABI for FreeWorld-native processes
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
 - **M7:** PE image decoder and minimal WinFacet DLL/API surface
