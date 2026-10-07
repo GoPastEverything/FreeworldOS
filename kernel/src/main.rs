@@ -239,6 +239,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::serial::println("FreeWorldOS: M2 APIC timer delivery online; IF enabled");
     arch::serial::println("FreeWorldOS: M1 foundation online");
     arch::serial::println("FreeWorldOS: bootstrap initialization complete");
+
+    #[cfg(feature = "m4b-ci-self-test")]
+    {
+        vfs::install_ci_scheduler_hook();
+    }
+
     rt::scheduler::start_default_scheduler()
 }
 
