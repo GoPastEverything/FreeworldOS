@@ -41,6 +41,23 @@ pub fn interrupts_enabled() -> bool {
     interrupts::are_enabled()
 }
 
+pub fn user_code_selector() -> x86_64::structures::gdt::SegmentSelector {
+    gdt::user_code_selector()
+}
+
+pub fn user_data_selector() -> x86_64::structures::gdt::SegmentSelector {
+    gdt::user_data_selector()
+}
+
+pub fn ring0_privilege_stack_top() -> u64 {
+    gdt::ring0_privilege_stack_top().as_u64()
+}
+
+#[cfg(feature = "m5b-ci-self-test")]
+pub fn privilege_ci_self_test() {
+    gdt::ci_self_test();
+}
+
 pub unsafe fn switch_task_context(old_rsp: *mut u64, new_rsp: u64) {
     unsafe { context_switch::switch_task_context(old_rsp, new_rsp) }
 }

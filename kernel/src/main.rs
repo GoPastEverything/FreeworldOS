@@ -103,6 +103,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m5b-ci-self-test")]
+    {
+        debug::selftest::run_infallible(
+            "m5b.privilege_setup",
+            arch::privilege_ci_self_test,
+        );
+    }
+
     if let Err(error) = arch::interrupt_controller::init() {
         panic!("M2 interrupt-controller initialization failed: {error:?}");
     }
