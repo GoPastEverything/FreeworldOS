@@ -9,11 +9,13 @@ use core::{
 pub mod graph;
 pub mod namespace;
 pub mod path;
+pub mod projection_path;
 pub mod roots;
 
 use graph::{NodeId, VfsError, VfsGraph};
 use namespace::NamePolicy;
 use path::{Name, Path, RootHandle};
+use projection_path::ProjectionPath;
 use roots::{ProjectionRoot, RootBindError, RootTable};
 
 struct VfsState {
@@ -140,6 +142,26 @@ pub(crate) fn resolve(path: &Path<'_>) -> Result<NodeId, VfsError> {
         .node_for_handle(path.root)
         .ok_or(VfsError::UnknownRoot)?;
     state.graph.resolve_from(start, path.segments)
+}
+
+pub(crate) fn resolve_projection_path(
+    path: &ProjectionPath,
+) -> Result<NodeId, VfsError> {
+    let state = global_graph();
+    let handle = state
+        .roots
+        .handle_for(path.root)
+        .ok_or(VfsError::UnknownRoot)?;
+    let mut current = state
+        .roots
+        .node_for_handle(handle)
+        .ok_or(VfsError::UnknownRoot)?;
+
+    for segment in &path.segments {
+        current = state.graph.lookup_child(current, segment.as_name())?;
+    }
+
+    Ok(current)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -352,6 +374,41 @@ extern "C" fn ci_vfs_reader() -> ! {
             linux_path.root.0,
             windows_path.root.0,
             resolved.0,
+        ));
+    }
+
+    #[cfg(feature = "m4d-ci-self-test")]
+    {
+        use projection_path::{parse_linux_absolute, LinuxPathError};
+
+        let parsed = parse_linux_absolute(b"/state\\bin")
+            .expect("M4-D failed to parse Linux absolute path");
+        let parsed_resolved = resolve_projection_path(&parsed)
+            .expect("M4-D parsed Linux path failed to resolve");
+        assert_eq!(parsed_resolved, resolved);
+
+        let root_only = parse_linux_absolute(b"///")
+            .expect("M4-D failed to parse repeated Linux root separators");
+        let root_resolved = resolve_projection_path(&root_only)
+            .expect("M4-D Linux root-only path failed to resolve");
+        assert_eq!(root_resolved.0, M4B_DIR_ID.load(Ordering::Acquire));
+
+        assert_eq!(
+            parse_linux_absolute(b"state\\bin"),
+            Err(LinuxPathError::NotAbsolute)
+        );
+        assert_eq!(
+            parse_linux_absolute(b"/./state"),
+            Err(LinuxPathError::UnsupportedTraversal)
+        );
+        assert_eq!(
+            parse_linux_absolute(b"/bad\0name"),
+            Err(LinuxPathError::Nul)
+        );
+
+        crate::arch::serial::write_fmt(format_args!(
+            "FreeWorldOS: M4-D Linux path proof: input_hex=2f73746174655c62696e file_node={} raw_bytes=ok backslash=data repeated_slash=collapsed dot_traversal=refused\n",
+            parsed_resolved.0,
         ));
     }
 

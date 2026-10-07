@@ -29,6 +29,7 @@ m35c2j-ci-run-queue-test = []
 m4a-ci-self-test = []
 m4b-ci-self-test = []
 m4c-ci-self-test = ["m4b-ci-self-test"]
+m4d-ci-self-test = ["m4c-ci-self-test"]
 
 [dependencies]
 bootloader_api = "=0.11.17"
