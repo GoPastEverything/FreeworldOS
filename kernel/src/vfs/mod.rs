@@ -142,7 +142,7 @@ pub(crate) fn resolve(path: &Path<'_>) -> Result<NodeId, VfsError> {
     state.graph.resolve_from(start, path.segments)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ProjectionBindError {
     Vfs(VfsError),
     Root(RootBindError),
