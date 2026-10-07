@@ -593,6 +593,11 @@ pub fn init(boot_info: &'static mut BootInfo) -> Result<(), MemoryError> {
             .into_option()
             .ok_or(MemoryError::NoPhysicalMemoryMapping)?;
 
+        crate::memory::address_space::validate_boot_layout(
+            boot_info,
+            physical_memory_offset,
+        )?;
+
         log_boot_memory(boot_info, physical_memory_offset);
 
         // Enable NX so PageTableFlags::NO_EXECUTE is actually enforced.
@@ -930,6 +935,17 @@ fn log_boot_memory(boot_info: &BootInfo, physical_memory_offset: u64) {
     }
     serial_memory_line(format_args!(
         "  memory: physical map offset={physical_memory_offset:#x}\n"
+    ));
+
+    serial_memory_line(format_args!(
+        "  memory: address-space split user=[{:#x}..{:#x}) kernel_start={:#x} kernel_image={:#x} kernel_stack={:#x} boot_info={:#x} phys_map={:#x}\n",
+        crate::memory::address_space::USER_ADDRESS_START,
+        crate::memory::address_space::USER_ADDRESS_END_EXCLUSIVE,
+        crate::memory::address_space::KERNEL_ADDRESS_START,
+        boot_info.kernel_image_offset,
+        boot_info.kernel_stack_bottom,
+        boot_info as *const BootInfo as u64,
+        physical_memory_offset,
     ));
 
     for region in boot_info.memory_regions.iter() {

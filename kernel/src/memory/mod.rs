@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
+pub mod address_space;
 pub mod heap;
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -167,6 +168,9 @@ pub enum MemoryError {
     VirtualPageReserved,
     VirtualPageNotReserved,
     VirtualReservationTableFull,
+    KernelMappingOutsideHigherHalf,
+    UserMappingOutsideLowerHalf,
+    BootAddressSpaceViolation,
 }
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
@@ -273,6 +277,7 @@ pub unsafe fn map_page(
     if permissions.writable() && permissions.executable() {
         return Err(MemoryError::WriteExecuteDenied);
     }
+    address_space::validate_mapping_target(virtual_address, permissions)?;
     if is_virtual_page_reserved(virtual_address) {
         return Err(MemoryError::VirtualPageReserved);
     }
@@ -292,10 +297,10 @@ pub fn unmap_page(virtual_address: u64) -> Result<PhysFrame, MemoryError> {
 #[cfg(feature = "m1-ci-self-test")]
 pub fn ci_self_test() -> Result<(), MemoryError> {
     const TEST_VIRTUAL_ADDRESSES: [u64; 4] = [
-        0x0000_4000_0000_0000,
-        0x0000_5000_0000_0000,
-        0x0000_6000_0000_0000,
-        0x0000_7000_0000_0000,
+        0xffff_e100_0000_0000,
+        0xffff_e200_0000_0000,
+        0xffff_e300_0000_0000,
+        0xffff_e400_0000_0000,
     ];
     const TEST_PATTERN: u64 = 0x4657_4f53_4d31_5445;
 
@@ -346,10 +351,10 @@ pub fn ci_self_test() -> Result<(), MemoryError> {
 #[cfg(feature = "m35a-ci-self-test")]
 pub fn frame_reuse_ci_self_test() -> Result<(), MemoryError> {
     const TEST_VIRTUAL_ADDRESSES: [u64; 4] = [
-        0x0000_2000_0000_0000,
-        0x0000_2100_0000_0000,
-        0x0000_2200_0000_0000,
-        0x0000_2300_0000_0000,
+        0xffff_e500_0000_0000,
+        0xffff_e600_0000_0000,
+        0xffff_e700_0000_0000,
+        0xffff_e800_0000_0000,
     ];
     const FIRST_PATTERN: u64 = 0x4657_4f53_4652_4545;
     const SECOND_PATTERN: u64 = 0x4657_4f53_5245_5553;

@@ -22,7 +22,25 @@ use core::panic::PanicInfo;
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
-    config.mappings.physical_memory = Some(Mapping::Dynamic);
+
+    config.mappings.kernel_base =
+        Mapping::FixedAddress(memory::address_space::BOOT_KERNEL_IMAGE_BASE);
+    config.mappings.kernel_stack =
+        Mapping::FixedAddress(memory::address_space::BOOT_KERNEL_STACK_GUARD_BASE);
+    config.mappings.boot_info =
+        Mapping::FixedAddress(memory::address_space::BOOT_INFO_BASE);
+    config.mappings.physical_memory =
+        Some(Mapping::FixedAddress(
+            memory::address_space::BOOT_PHYSICAL_MEMORY_BASE,
+        ));
+
+    // Any bootloader-managed mappings that remain dynamic (for example a
+    // framebuffer or ramdisk mapping) are confined to the kernel half.
+    config.mappings.dynamic_range_start =
+        Some(memory::address_space::BOOT_DYNAMIC_START);
+    config.mappings.dynamic_range_end =
+        Some(memory::address_space::BOOT_DYNAMIC_END);
+
     config
 };
 
@@ -75,6 +93,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             stats.returned_total,
             stats.reused_total,
         ));
+    }
+
+    #[cfg(feature = "m5a-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5a.address_space",
+            memory::address_space::ci_self_test,
+        );
     }
 
     if let Err(error) = arch::interrupt_controller::init() {
