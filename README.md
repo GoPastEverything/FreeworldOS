@@ -72,7 +72,7 @@ docs/
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
 - **M3.5-C:** ◐ C1–C2l merged; C2m adds the production kernel-task spawn API and proves two spawned tasks through timer dispatch, Interrupt resume, safe exit and off-stack reclamation; priorities and SMP remain absent
 - **M4:** ◐ M4-A/B establish the persistent native graph; M4-C adds explicit root aliases; M4-D adds Linux byte-path decoding; M4-E adds Windows DOS absolute UTF-16 decoding with lossless WTF-8 handling for unpaired surrogates
-- **M5:** ◐ M5-A enforces the higher-half kernel / lower-half user split; M5-B adds ring-3 code/data selectors and a higher-half TSS RSP0 transition stack while ring-3 entry, per-process page tables and the native callgate remain later slices
+- **M5:** ◐ M5-A/B establish the address split, user selectors and TSS RSP0; M5-C adds one controlled IRETQ-to-CPL3 round-trip through a CI-only DPL3 return vector while user-task/process state and the native callgate remain later slices
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
 - **M7:** PE image decoder and minimal WinFacet DLL/API surface
 - **M8:** FW_MODULE loader and Bridge ABI v1

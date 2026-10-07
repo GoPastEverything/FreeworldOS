@@ -70,6 +70,14 @@ lazy_static! {
         unsafe {
             idt[apic::TIMER_VECTOR].set_handler_addr(timer_entry::handler_addr());
         }
+
+        #[cfg(feature = "m5c-ci-self-test")]
+        unsafe {
+            idt[super::user_roundtrip::RETURN_VECTOR]
+                .set_handler_addr(super::user_roundtrip::handler_addr())
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        }
+
         idt[apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_interrupt);
 
         idt
