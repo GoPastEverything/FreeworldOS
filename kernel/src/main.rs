@@ -217,6 +217,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     vfs::init();
+
+    #[cfg(feature = "m4a-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m4a.vfs_graph",
+            vfs::graph::ci_self_test,
+        );
+    }
+
     state::init();
     exec::init();
     rt::init();
