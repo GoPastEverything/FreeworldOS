@@ -118,6 +118,17 @@ pub fn ci_self_test() -> Result<(), MemoryError> {
 
     if unsafe {
         super::map_page(
+            0,
+            frame,
+            PagePermissions::user_read_write(),
+        )
+    } != Err(MemoryError::UserMappingOutsideLowerHalf)
+    {
+        return Err(MemoryError::UserMappingOutsideLowerHalf);
+    }
+
+    if unsafe {
+        super::map_page(
             KERNEL_TEST_PAGE,
             frame,
             PagePermissions::user_read_write(),
