@@ -407,7 +407,7 @@ extern "C" fn ci_vfs_reader() -> ! {
         );
 
         crate::arch::serial::write_fmt(format_args!(
-            "FreeWorldOS: M4-D Linux path proof: input=/state\\\\bin file_node={} raw_bytes=ok backslash=data repeated_slash=collapsed dot_traversal=refused\n",
+            "FreeWorldOS: M4-D Linux path proof: input_hex=2f73746174655c62696e file_node={} raw_bytes=ok backslash=data repeated_slash=collapsed dot_traversal=refused\n",
             parsed_resolved.0,
         ));
     }
