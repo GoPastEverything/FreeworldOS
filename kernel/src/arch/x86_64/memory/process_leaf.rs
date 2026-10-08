@@ -160,9 +160,18 @@ fn verify_chain(
         } else {
             PARENT_FLAGS
         };
+        // Once this process PML4 has actually been loaded, the CPU may
+        // set ACCESSED on each paging level and DIRTY on the writable leaf.
+        // Preserve exact ownership/permission checks while tolerating only
+        // these architecturally maintained status bits.
+        let hardware_bits = if index == 3 {
+            PageTableFlags::ACCESSED | PageTableFlags::DIRTY
+        } else {
+            PageTableFlags::ACCESSED
+        };
         if entry.is_unused()
             || entry.addr().as_u64() != *expected_phys
-            || entry.flags() != expected_flags
+            || (entry.flags() & !hardware_bits) != expected_flags
         {
             return Err(MemoryError::ProcessUserLeafCorrupt);
         }
