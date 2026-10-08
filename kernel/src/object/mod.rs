@@ -8,17 +8,19 @@ pub mod task;
 
 use counter::CounterObject;
 use handle::{Handle, HandleError, Rights};
+use process::{ProcessInfo, ProcessObject};
 use task::{TaskInfo, TaskObject, TaskState};
 
 pub enum FwObject {
     Counter(CounterObject),
+    Process(ProcessObject),
     Task(TaskObject),
 }
 
 impl FwObject {
     fn can_close_last_handle(&self) -> bool {
         match self {
-            Self::Counter(_) => true,
+            Self::Counter(_) | Self::Process(_) => true,
             Self::Task(task) => task.can_release_stack(),
         }
     }
@@ -63,6 +65,14 @@ pub fn create_task(rights: Rights) -> Result<Handle, ObjectError> {
     Ok(handle::insert(object, rights)?)
 }
 
+pub fn create_process(
+    profile: crate::exec::profile::ExecutionProfile,
+    rights: Rights,
+) -> Result<Handle, ObjectError> {
+    let object = Arc::new(FwObject::Process(ProcessObject::new(profile)?));
+    Ok(handle::insert(object, rights)?)
+}
+
 pub(crate) type ObjectRef = Arc<FwObject>;
 
 pub(crate) fn create_task_ref() -> Result<ObjectRef, ObjectError> {
@@ -88,6 +98,15 @@ pub fn task_info(handle_value: Handle) -> Result<TaskInfo, ObjectError> {
 
     match object.as_ref() {
         FwObject::Task(task) => Ok(task.info()),
+        _ => Err(ObjectError::WrongObjectType),
+    }
+}
+
+pub fn process_info(handle_value: Handle) -> Result<ProcessInfo, ObjectError> {
+    let object = handle::get(handle_value, Rights::READ)?;
+
+    match object.as_ref() {
+        FwObject::Process(process) => Ok(process.info()),
         _ => Err(ObjectError::WrongObjectType),
     }
 }
@@ -399,6 +418,96 @@ pub fn task_ownership_ci_self_test() -> Result<(), ObjectError> {
 
     crate::arch::serial::println(
         "FreeWorldOS: M3.5-C ownership self-test: passed runnable_close=denied saved_rsp_close=denied guard_reservation=ok sysv_rsp_align=ok",
+    );
+
+    Ok(())
+}
+
+
+#[cfg(feature = "m5d-ci-self-test")]
+pub fn process_address_space_ci_self_test() -> Result<(), ObjectError> {
+    use crate::exec::profile::{
+        Abi, Architecture, Environment, ExecutionProfile, ImageFormat,
+    };
+
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+
+    let live_before = process::live_count();
+    let frames_before = crate::memory::frame_reuse_stats()?;
+
+    let first = create_process(profile, Rights::READ)?;
+    let second = create_process(profile, Rights::READ)?;
+
+    let first_info = process_info(first)?;
+    let second_info = process_info(second)?;
+
+    if first_info.identity.object_id == 0
+        || second_info.identity.object_id == 0
+        || first_info.identity.object_id == second_info.identity.object_id
+        || first_info.identity.profile != profile
+        || second_info.identity.profile != profile
+        || first_info.address_space_root == second_info.address_space_root
+        || process::live_count() != live_before + 2
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let first_object = handle::get(first, Rights::READ)?;
+    let second_object = handle::get(second, Rights::READ)?;
+
+    let first_root = match first_object.as_ref() {
+        FwObject::Process(process) => process.inspect_address_space()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let second_root = match second_object.as_ref() {
+        FwObject::Process(process) => process.inspect_address_space()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+
+    if first_root.root_frame != first_info.address_space_root
+        || second_root.root_frame != second_info.address_space_root
+        || first_root.active_kernel_root_frame != second_root.active_kernel_root_frame
+        || first_root.root_frame == first_root.active_kernel_root_frame
+        || second_root.root_frame == second_root.active_kernel_root_frame
+        || !first_root.lower_half_empty
+        || !second_root.lower_half_empty
+        || !first_root.higher_half_matches_kernel
+        || !second_root.higher_half_matches_kernel
+        || first_root.higher_half_user_accessible
+        || second_root.higher_half_user_accessible
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let kernel_root = first_root.active_kernel_root_frame;
+
+    drop(first_object);
+    drop(second_object);
+    close(first)?;
+    close(second)?;
+
+    if process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let frames_after = crate::memory::frame_reuse_stats()?;
+    if frames_after.returned_total.saturating_sub(frames_before.returned_total) != 2 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M5-D process roots: first={:#x} second={:#x} kernel={:#x} distinct=ok lower_private_empty=ok higher_shared=ok higher_user=off\n",
+        first_info.address_space_root.start,
+        second_info.address_space_root.start,
+        kernel_root.start,
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-D process address-space self-test: passed process_object=ok own_pml4=ok lower_half=private_empty higher_half=kernel_shared root_reclaim=2 cr3_switch=off user_execution=off preemption=off callgate=off",
     );
 
     Ok(())

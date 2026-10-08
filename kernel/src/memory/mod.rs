@@ -14,6 +14,39 @@ pub struct PhysFrame {
     pub start: u64,
 }
 
+pub struct ProcessAddressSpace {
+    root_frame: PhysFrame,
+}
+
+impl ProcessAddressSpace {
+    pub fn new() -> Result<Self, MemoryError> {
+        let root_frame = crate::arch::memory::create_process_address_space_root()?;
+        Ok(Self { root_frame })
+    }
+
+    pub const fn root_frame(&self) -> PhysFrame {
+        self.root_frame
+    }
+
+    pub fn inspect(
+        &self,
+    ) -> Result<crate::arch::memory::ProcessAddressSpaceRootInfo, MemoryError> {
+        crate::arch::memory::inspect_process_address_space_root(self.root_frame)
+    }
+}
+
+impl Drop for ProcessAddressSpace {
+    fn drop(&mut self) {
+        // M5-D creates no lower-half mappings inside a process root. A nonempty
+        // lower half here means a later slice introduced process mappings
+        // without also implementing recursive address-space reclamation.
+        unsafe {
+            crate::arch::memory::destroy_process_address_space_root(self.root_frame)
+                .expect("FreeWorld process address-space root teardown failed");
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameReuseStats {
     pub available: usize,
@@ -171,6 +204,9 @@ pub enum MemoryError {
     KernelMappingOutsideHigherHalf,
     UserMappingOutsideLowerHalf,
     BootAddressSpaceViolation,
+    InvalidAddressSpaceRoot,
+    AddressSpaceRootActive,
+    AddressSpaceRootNotEmpty,
 }
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {
