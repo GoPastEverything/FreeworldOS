@@ -700,6 +700,8 @@ pub fn frame_reuse_stats() -> Result<crate::memory::FrameReuseStats, MemoryError
 }
 
 
+#[cfg(feature = "m5f-ci-self-test")]
+mod process_cr3_probe;
 mod process_leaf;
 pub use process_leaf::{
     InactiveUserLeaf, InactiveUserLeafInfo,
@@ -707,6 +709,8 @@ pub use process_leaf::{
 };
 #[cfg(feature = "m5e-ci-self-test")]
 pub use process_leaf::ci_probe_inactive_user_leaf;
+#[cfg(feature = "m5f-ci-self-test")]
+pub use process_leaf::{ControlledCr3Proof, ci_controlled_cr3_roundtrip};
 
 const PML4_ENTRY_COUNT: usize = 512;
 const PML4_LOWER_HALF_ENTRIES: usize = 256;

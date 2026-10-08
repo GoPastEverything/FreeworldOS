@@ -167,6 +167,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::process_user_leaf_ci_self_test,
         );
     }
+    #[cfg(feature = "m5f-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5f.process_cr3_roundtrip",
+            object::process_cr3_roundtrip_ci_self_test,
+        );
+    }
 
     #[cfg(feature = "m3-ci-self-test")]
     {
