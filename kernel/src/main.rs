@@ -153,6 +153,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M3 object initialization failed: {error:?}");
     }
 
+    #[cfg(feature = "m5d-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5d.process_address_space",
+            object::process_address_space_ci_self_test,
+        );
+    }
+
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(

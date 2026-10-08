@@ -699,6 +699,158 @@ pub fn frame_reuse_stats() -> Result<crate::memory::FrameReuseStats, MemoryError
     with_manager(|manager| manager.allocator.reuse_stats())
 }
 
+
+const PML4_ENTRY_COUNT: usize = 512;
+const PML4_LOWER_HALF_ENTRIES: usize = 256;
+
+pub fn create_process_address_space_root() -> Result<PhysFrame, MemoryError> {
+    assert!(
+        !crate::debug::panic::is_active(),
+        "FreeWorld process address-space allocation attempted during panic/fatal dump"
+    );
+
+    with_manager(|manager| {
+        let root = manager
+            .allocator
+            .next_frame()
+            .map(|frame| PhysFrame {
+                start: frame.start_address().as_u64(),
+            })
+            .ok_or(MemoryError::OutOfFrames)?;
+
+        let root_pointer = manager.allocator.direct_map_pointer(root.start);
+        unsafe {
+            core::ptr::write_bytes(root_pointer, 0, PAGE_SIZE as usize);
+        }
+
+        let (kernel_root_frame, _) = Cr3::read();
+        let kernel_pointer = manager
+            .allocator
+            .direct_map_pointer(kernel_root_frame.start_address().as_u64())
+            as *const PageTable;
+        let process_pointer = root_pointer as *mut PageTable;
+
+        let kernel_root = unsafe { &*kernel_pointer };
+        let process_root = unsafe { &mut *process_pointer };
+
+        // Lower-half entries stay explicitly zero even if the active kernel
+        // PML4 retains empty intermediate tables from earlier temporary user
+        // mappings. Only the shared higher-half kernel entries are copied.
+        for index in PML4_LOWER_HALF_ENTRIES..PML4_ENTRY_COUNT {
+            if kernel_root[index].is_unused() {
+                process_root[index].set_unused();
+            } else {
+                process_root[index].set_addr(
+                    kernel_root[index].addr(),
+                    kernel_root[index].flags(),
+                );
+            }
+        }
+
+        Ok(root)
+    })?
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessAddressSpaceRootInfo {
+    pub root_frame: PhysFrame,
+    pub active_kernel_root_frame: PhysFrame,
+    pub lower_half_empty: bool,
+    pub higher_half_matches_kernel: bool,
+    pub higher_half_user_accessible: bool,
+}
+
+pub fn inspect_process_address_space_root(
+    root: PhysFrame,
+) -> Result<ProcessAddressSpaceRootInfo, MemoryError> {
+    with_manager(|manager| {
+        if !manager.allocator.is_managed_frame(root.start)
+            || !manager.allocator.is_frame_allocated(root.start)
+        {
+            return Err(MemoryError::InvalidAddressSpaceRoot);
+        }
+
+        let (kernel_root_frame, _) = Cr3::read();
+        let kernel_phys = kernel_root_frame.start_address().as_u64();
+
+        let process_pointer =
+            manager.allocator.direct_map_pointer(root.start) as *const PageTable;
+        let kernel_pointer =
+            manager.allocator.direct_map_pointer(kernel_phys) as *const PageTable;
+
+        let process_root = unsafe { &*process_pointer };
+        let kernel_root = unsafe { &*kernel_pointer };
+
+        let lower_half_empty = (0..PML4_LOWER_HALF_ENTRIES)
+            .all(|index| process_root[index].is_unused());
+
+        let mut higher_half_matches_kernel = true;
+        let mut higher_half_user_accessible = false;
+
+        for index in PML4_LOWER_HALF_ENTRIES..PML4_ENTRY_COUNT {
+            let process_entry = &process_root[index];
+            let kernel_entry = &kernel_root[index];
+
+            if process_entry.addr() != kernel_entry.addr()
+                || process_entry.flags() != kernel_entry.flags()
+            {
+                higher_half_matches_kernel = false;
+            }
+
+            if process_entry
+                .flags()
+                .contains(PageTableFlags::USER_ACCESSIBLE)
+            {
+                higher_half_user_accessible = true;
+            }
+        }
+
+        Ok(ProcessAddressSpaceRootInfo {
+            root_frame: root,
+            active_kernel_root_frame: PhysFrame {
+                start: kernel_phys,
+            },
+            lower_half_empty,
+            higher_half_matches_kernel,
+            higher_half_user_accessible,
+        })
+    })?
+}
+
+pub unsafe fn destroy_process_address_space_root(
+    root: PhysFrame,
+) -> Result<(), MemoryError> {
+    assert!(
+        !crate::debug::panic::is_active(),
+        "FreeWorld process address-space destruction attempted during panic/fatal dump"
+    );
+
+    with_manager(|manager| {
+        let (active_root, _) = Cr3::read();
+        if active_root.start_address().as_u64() == root.start {
+            return Err(MemoryError::AddressSpaceRootActive);
+        }
+
+        if !manager.allocator.is_managed_frame(root.start)
+            || !manager.allocator.is_frame_allocated(root.start)
+        {
+            return Err(MemoryError::InvalidAddressSpaceRoot);
+        }
+
+        let process_pointer =
+            manager.allocator.direct_map_pointer(root.start) as *const PageTable;
+        let process_root = unsafe { &*process_pointer };
+
+        if (0..PML4_LOWER_HALF_ENTRIES)
+            .any(|index| !process_root[index].is_unused())
+        {
+            return Err(MemoryError::AddressSpaceRootNotEmpty);
+        }
+
+        manager.allocator.release_frame(root)
+    })?
+}
+
 #[cfg(feature = "m35a-ci-self-test")]
 pub fn frame_is_allocated_for_test(frame: PhysFrame) -> Result<bool, MemoryError> {
     with_manager(|manager| {
