@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -270,6 +270,9 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5d.process_address_space" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M5-D process roots: first=0x[0-9a-f]+ second=0x[0-9a-f]+ kernel=0x[0-9a-f]+ distinct=ok lower_private_empty=ok higher_shared=ok higher_user=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-D process address-space self-test: passed process_object=ok own_pml4=ok lower_half=private_empty higher_half=kernel_shared root_reclaim=2 cr3_switch=off user_execution=off preemption=off callgate=off" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5e.process_user_leaf" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M5-E inactive leaf: root=0x[0-9a-f]+ peer=0x[0-9a-f]+ virtual=0x500020000000 data=0x[0-9a-f]+ ancestors=user leaf=rw_nx peer_lower=empty kernel_half=shared active_cr3=unchanged" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-E process user-leaf self-test: passed inactive_mapping=ok user_leaf=1 ancestors=3 user_writable=ok leaf_nx=ok isolated_peer=ok rollback_rejected=ok frames_returned=6 cr3_switch=off user_execution=off callgate=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M3.5-C ownership self-test: passed runnable_close=denied saved_rsp_close=denied guard_reservation=ok sysv_rsp_align=ok" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: EVENT seq=[1-9][0-9]* .* id=0x0300 " selftest-boot-serial.log
           grep -Fq "FreeWorldOS: EXCEPTION: #BP breakpoint" selftest-boot-serial.log

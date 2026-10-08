@@ -73,6 +73,30 @@ pub fn create_process(
     Ok(handle::insert(object, rights)?)
 }
 
+pub fn create_process_with_user_leaf(
+    profile: crate::exec::profile::ExecutionProfile,
+    rights: Rights,
+    virtual_address: u64,
+    permissions: crate::memory::PagePermissions,
+) -> Result<Handle, ObjectError> {
+    let mut process = ProcessObject::new(profile)?;
+    process.map_one_user_leaf(virtual_address, permissions)?;
+    // After handle insertion the process is immutable; M5-E deliberately
+    // does not expose a concurrent mapping mutation surface.
+    let object = Arc::new(FwObject::Process(process));
+    Ok(handle::insert(object, rights)?)
+}
+
+pub fn process_user_leaf_info(
+    handle_value: Handle,
+) -> Result<crate::arch::memory::InactiveUserLeafInfo, ObjectError> {
+    let object = handle::get(handle_value, Rights::READ)?;
+    match object.as_ref() {
+        FwObject::Process(process) => Ok(process.inspect_user_leaf()?),
+        _ => Err(ObjectError::WrongObjectType),
+    }
+}
+
 pub(crate) type ObjectRef = Arc<FwObject>;
 
 pub(crate) fn create_task_ref() -> Result<ObjectRef, ObjectError> {
@@ -508,6 +532,117 @@ pub fn process_address_space_ci_self_test() -> Result<(), ObjectError> {
     ));
     crate::arch::serial::println(
         "FreeWorldOS: M5-D process address-space self-test: passed process_object=ok own_pml4=ok lower_half=private_empty higher_half=kernel_shared root_reclaim=2 cr3_switch=off user_execution=off preemption=off callgate=off",
+    );
+
+    Ok(())
+}
+
+
+#[cfg(feature = "m5e-ci-self-test")]
+pub fn process_user_leaf_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::{MemoryError, PagePermissions},
+    };
+
+    const USER_VA: u64 = 0x0000_5000_2000_0000;
+    const PATTERN: u64 = 0x4d35_4555_5345_524c;
+
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+
+    // A rejected out-of-range mapping must not publish a process handle or
+    // leave behind its newly allocated empty PML4 root.
+    if !matches!(
+        create_process_with_user_leaf(
+            profile, Rights::READ,
+            0xffff_e000_0000_0000,
+            PagePermissions::user_read_write(),
+        ),
+        Err(ObjectError::Memory(MemoryError::UserMappingOutsideLowerHalf))
+    ) {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let live_before = process::live_count();
+    let before = crate::memory::frame_reuse_stats()?;
+    let mapped = create_process_with_user_leaf(
+        profile, Rights::READ, USER_VA, PagePermissions::user_read_write(),
+    )?;
+    let empty_peer = create_process(profile, Rights::READ)?;
+
+    let mapped_info = process_info(mapped)?;
+    let empty_info = process_info(empty_peer)?;
+    let leaf = process_user_leaf_info(mapped)?;
+
+    let mapped_ref = handle::get(mapped, Rights::READ)?;
+    let empty_ref = handle::get(empty_peer, Rights::READ)?;
+
+    let (mapped_root, content_ok) = match mapped_ref.as_ref() {
+        FwObject::Process(p) => (
+            p.inspect_address_space()?,
+            p.ci_probe_user_leaf(PATTERN)?,
+        ),
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let empty_root = match empty_ref.as_ref() {
+        FwObject::Process(p) => p.inspect_address_space()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+
+    if mapped_info.address_space_root == empty_info.address_space_root
+        || leaf.root_frame != mapped_info.address_space_root
+        || leaf.virtual_address != USER_VA
+        || leaf.data_frame == mapped_info.address_space_root
+        || !leaf.ancestor_user_accessible
+        || !leaf.leaf_user_accessible
+        || !leaf.leaf_writable
+        || !leaf.leaf_non_executable
+        || !content_ok
+        || mapped_root.lower_half_empty
+        || !empty_root.lower_half_empty
+        || !mapped_root.higher_half_matches_kernel
+        || !empty_root.higher_half_matches_kernel
+        || mapped_root.higher_half_user_accessible
+        || empty_root.higher_half_user_accessible
+        || mapped_root.active_kernel_root_frame != empty_root.active_kernel_root_frame
+        || mapped_root.active_kernel_root_frame == mapped_info.address_space_root
+        || empty_root.active_kernel_root_frame == empty_info.address_space_root
+        || process::live_count() != live_before + 2
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    // These handle references must go away before final-close reclamation.
+    drop(mapped_ref);
+    drop(empty_ref);
+    close(mapped)?;
+    close(empty_peer)?;
+
+    if process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let after = crate::memory::frame_reuse_stats()?;
+    // Mapped process: 1 PML4 + 3 private tables + 1 data leaf = 5 frames.
+    // Empty peer: 1 PML4 = 1 frame. No kernel-half frame is released.
+    if after.returned_total.saturating_sub(before.returned_total) != 6 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M5-E inactive leaf: root={:#x} peer={:#x} virtual={:#x} data={:#x} ancestors=user leaf=rw_nx peer_lower=empty kernel_half=shared active_cr3=unchanged\n",
+        mapped_info.address_space_root.start,
+        empty_info.address_space_root.start,
+        USER_VA,
+        leaf.data_frame.start,
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-E process user-leaf self-test: passed inactive_mapping=ok user_leaf=1 ancestors=3 user_writable=ok leaf_nx=ok isolated_peer=ok rollback_rejected=ok frames_returned=6 cr3_switch=off user_execution=off callgate=off",
     );
 
     Ok(())

@@ -16,16 +16,34 @@ pub struct PhysFrame {
 
 pub struct ProcessAddressSpace {
     root_frame: PhysFrame,
+    user_leaf: Option<crate::arch::memory::InactiveUserLeaf>,
 }
 
 impl ProcessAddressSpace {
     pub fn new() -> Result<Self, MemoryError> {
         let root_frame = crate::arch::memory::create_process_address_space_root()?;
-        Ok(Self { root_frame })
+        Ok(Self { root_frame, user_leaf: None })
     }
 
     pub const fn root_frame(&self) -> PhysFrame {
         self.root_frame
+    }
+
+    // Bootstrap one-leaf construction runs while the ProcessObject is still
+    // uniquely owned, before publication inside an Arc or handle table.
+    pub fn map_one_user_leaf(
+        &mut self,
+        address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), MemoryError> {
+        if self.user_leaf.is_some() {
+            return Err(MemoryError::ProcessUserLeafAlreadyMapped);
+        }
+        let leaf = crate::arch::memory::map_one_inactive_user_leaf(
+            self.root_frame, address, permissions
+        )?;
+        self.user_leaf = Some(leaf);
+        Ok(())
     }
 
     pub fn inspect(
@@ -33,13 +51,31 @@ impl ProcessAddressSpace {
     ) -> Result<crate::arch::memory::ProcessAddressSpaceRootInfo, MemoryError> {
         crate::arch::memory::inspect_process_address_space_root(self.root_frame)
     }
+
+    pub fn inspect_user_leaf(
+        &self,
+    ) -> Result<crate::arch::memory::InactiveUserLeafInfo, MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::inspect_inactive_user_leaf(self.root_frame, leaf)
+    }
+
+    #[cfg(feature = "m5e-ci-self-test")]
+    pub fn ci_probe_user_leaf(&self, pattern: u64) -> Result<bool, MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_probe_inactive_user_leaf(
+            self.root_frame, leaf, pattern
+        )
+    }
 }
 
 impl Drop for ProcessAddressSpace {
     fn drop(&mut self) {
-        // M5-D creates no lower-half mappings inside a process root. A nonempty
-        // lower half here means a later slice introduced process mappings
-        // without also implementing recursive address-space reclamation.
+        if let Some(leaf) = self.user_leaf.take() {
+            crate::arch::memory::destroy_inactive_user_leaf(self.root_frame, leaf)
+                .expect("FreeWorld inactive process user-leaf teardown failed");
+        }
+        // No process CR3 may be active at this point. The root contains no
+        // process-owned lower-half entries after leaf teardown.
         unsafe {
             crate::arch::memory::destroy_process_address_space_root(self.root_frame)
                 .expect("FreeWorld process address-space root teardown failed");
@@ -207,6 +243,9 @@ pub enum MemoryError {
     InvalidAddressSpaceRoot,
     AddressSpaceRootActive,
     AddressSpaceRootNotEmpty,
+    InvalidProcessUserPermissions,
+    ProcessUserLeafAlreadyMapped,
+    ProcessUserLeafCorrupt,
 }
 
 pub fn allocate_frame() -> Result<PhysFrame, MemoryError> {

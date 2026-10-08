@@ -35,6 +35,7 @@ m5a-ci-self-test = ["kernel/m5a-ci-self-test"]
 m5b-ci-self-test = ["kernel/m5b-ci-self-test"]
 m5c-ci-self-test = ["kernel/m5c-ci-self-test"]
 m5d-ci-self-test = ["kernel/m5d-ci-self-test"]
+m5e-ci-self-test = ["kernel/m5e-ci-self-test"]
 
 [dependencies]
 ovmf-prebuilt = "=0.2.9"
