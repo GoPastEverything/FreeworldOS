@@ -111,6 +111,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m5c-ci-self-test")]
+    {
+        debug::selftest::run_infallible(
+            "m5c.ring3_roundtrip",
+            arch::ring3_roundtrip_ci_self_test,
+        );
+    }
+
     if let Err(error) = arch::interrupt_controller::init() {
         panic!("M2 interrupt-controller initialization failed: {error:?}");
     }

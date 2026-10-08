@@ -154,6 +154,22 @@ pub fn user_data_selector() -> SegmentSelector {
     GDT.1.user_data
 }
 
+#[cfg(feature = "m5c-ci-self-test")]
+pub fn restore_kernel_data_segments() {
+    // SAFETY: GDT is loaded and this is called at CPL0 with interrupts
+    // disabled before leaving the M5-C test-only return gate.
+    unsafe {
+        DS::set_reg(GDT.1.data);
+        ES::set_reg(GDT.1.data);
+        SS::set_reg(GDT.1.data);
+    }
+}
+
+#[cfg(feature = "m5c-ci-self-test")]
+pub fn kernel_data_selector() -> SegmentSelector {
+    GDT.1.data
+}
+
 fn selector_bits(selector: SegmentSelector, privilege: PrivilegeLevel) -> u16 {
     (selector.index() << 3) | privilege as u16
 }
