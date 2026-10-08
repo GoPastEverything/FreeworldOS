@@ -700,6 +700,14 @@ pub fn frame_reuse_stats() -> Result<crate::memory::FrameReuseStats, MemoryError
 }
 
 
+mod process_leaf;
+pub use process_leaf::{
+    InactiveUserLeaf, InactiveUserLeafInfo,
+    destroy_inactive_user_leaf, inspect_inactive_user_leaf, map_one_inactive_user_leaf,
+};
+#[cfg(feature = "m5e-ci-self-test")]
+pub use process_leaf::ci_probe_inactive_user_leaf;
+
 const PML4_ENTRY_COUNT: usize = 512;
 const PML4_LOWER_HALF_ENTRIES: usize = 256;
 

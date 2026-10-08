@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::{
     exec::profile::ExecutionProfile,
-    memory::{MemoryError, PhysFrame, ProcessAddressSpace},
+    memory::{MemoryError, PagePermissions, PhysFrame, ProcessAddressSpace},
 };
 
 static NEXT_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
@@ -40,6 +40,25 @@ impl ProcessObject {
             },
             address_space,
         })
+    }
+
+    pub fn map_one_user_leaf(
+        &mut self,
+        address: u64,
+        permissions: PagePermissions,
+    ) -> Result<(), MemoryError> {
+        self.address_space.map_one_user_leaf(address, permissions)
+    }
+
+    pub fn inspect_user_leaf(
+        &self,
+    ) -> Result<crate::arch::memory::InactiveUserLeafInfo, MemoryError> {
+        self.address_space.inspect_user_leaf()
+    }
+
+    #[cfg(feature = "m5e-ci-self-test")]
+    pub fn ci_probe_user_leaf(&self, pattern: u64) -> Result<bool, MemoryError> {
+        self.address_space.ci_probe_user_leaf(pattern)
     }
 
     pub fn info(&self) -> ProcessInfo {
