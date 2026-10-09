@@ -7,6 +7,8 @@ mod pit;
 mod timer_entry;
 #[cfg(feature = "m5c-ci-self-test")]
 mod user_roundtrip;
+#[cfg(feature = "m5g-ci-self-test")]
+pub(crate) mod process_ring3;
 pub mod exceptions;
 pub mod interrupt_controller;
 pub mod memory;

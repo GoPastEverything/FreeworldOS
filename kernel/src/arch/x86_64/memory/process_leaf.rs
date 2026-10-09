@@ -345,3 +345,83 @@ pub fn ci_controlled_cr3_roundtrip(
         absent_from_kernel_root,
     })
 }
+
+
+#[cfg(feature = "m5g-ci-self-test")]
+pub fn ci_process_ring3_roundtrip(
+    root: PhysFrame,
+    mapping: &InactiveUserLeaf,
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    let info = inspect_inactive_user_leaf(root, mapping)?;
+    if !info.ancestor_user_accessible
+        || !info.leaf_user_accessible
+        || info.leaf_writable
+        || !mapping.leaf_flags.contains(PageTableFlags::PRESENT)
+        || mapping.leaf_flags.contains(PageTableFlags::NO_EXECUTE)
+        || mapping.virtual_address % PAGE_SIZE != 0
+    {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+
+    // Demonstrate that this virtual address is provided by the process root,
+    // rather than accidentally inherited from the active kernel root.
+    let absent_from_kernel = with_manager(|manager| {
+        matches!(
+            manager.mapper.translate(VirtAddr::new(mapping.virtual_address)),
+            TranslateResult::NotMapped
+        )
+    })?;
+    if !absent_from_kernel {
+        return Err(MemoryError::PageAlreadyMapped);
+    }
+
+    // Stage the one-shot instruction bytes through the kernel direct map
+    // while the process is INACTIVE. The user leaf remains U+RX, never U+RWX.
+    // The stub never pushes or stores to the user stack: M5-G deliberately
+    // preserves M5-E's one-leaf limit.
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let bytes = crate::arch::process_ring3::stub_bytes();
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+        }
+        Ok(())
+    })??;
+
+    let user_rsp = mapping.virtual_address + PAGE_SIZE - 16;
+    // SAFETY: the ProcessObject holds this root and the executable leaf
+    // alive, this single-leaf code stub is installed, and no task is running
+    // with this process CR3. The assembly restores kernel CR3 before Rust.
+    let proof = unsafe {
+        crate::arch::process_ring3::enter_once(
+            root.start, mapping.virtual_address, user_rsp
+        )
+    };
+
+    // The CPU may have set ACCESSED status bits on the now-activated tables.
+    // The M5-F verification still checks ownership and permissions exactly.
+    let after = inspect_inactive_user_leaf(root, mapping)?;
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address == 0
+        || !after.leaf_user_accessible
+        || after.leaf_writable
+        || !after.ancestor_user_accessible
+        || after.leaf_non_executable
+    {
+        return Err(MemoryError::ProcessUserLeafCorrupt);
+    }
+    Ok(proof)
+}
+
+
+#[cfg(feature = "m5g-ci-self-test")]
+impl InactiveUserLeaf {
+    pub fn ci_ring3_on_process_root(
+        &self,
+        root: PhysFrame,
+    ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        ci_process_ring3_roundtrip(root, self)
+    }
+}

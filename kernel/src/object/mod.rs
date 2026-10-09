@@ -730,3 +730,88 @@ pub fn process_cr3_roundtrip_ci_self_test() -> Result<(), ObjectError> {
     );
     Ok(())
 }
+
+
+#[cfg(feature = "m5g-ci-self-test")]
+pub fn process_ring3_cr3_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+
+    const USER_CODE_VA: u64 = 0x0000_5000_3000_0000;
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+    let live_before = process::live_count();
+    let before = crate::memory::frame_reuse_stats()?;
+
+    // M5-E's one-leaf process has only an executable code page. This stub
+    // makes NO user-stack writes. A real writable user stack is deferred.
+    let mapped = create_process_with_user_leaf(
+        profile, Rights::READ, USER_CODE_VA, PagePermissions::user_read_execute(),
+    )?;
+    let empty_peer = create_process(profile, Rights::READ)?;
+    let mapped_info = process_info(mapped)?;
+    let empty_info = process_info(empty_peer)?;
+    let mapped_ref = handle::get(mapped, Rights::READ)?;
+    let peer_ref = handle::get(empty_peer, Rights::READ)?;
+
+    let (proof, user_leaf) = match mapped_ref.as_ref() {
+        FwObject::Process(p) => (
+            p.ci_ring3_process_roundtrip()?,
+            p.inspect_user_leaf()?,
+        ),
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let peer_info = match peer_ref.as_ref() {
+        FwObject::Process(p) => p.inspect_address_space()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+
+    if proof.observed_process_cr3 & !0xfff != mapped_info.address_space_root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.original_kernel_cr3 == mapped_info.address_space_root.start
+        || proof.frame_address == 0
+        || !user_leaf.leaf_user_accessible
+        || user_leaf.leaf_writable
+        || user_leaf.leaf_non_executable
+        || !user_leaf.ancestor_user_accessible
+        || user_leaf.virtual_address != USER_CODE_VA
+        || !peer_info.lower_half_empty
+        || !peer_info.higher_half_matches_kernel
+        || peer_info.higher_half_user_accessible
+        || peer_info.root_frame != empty_info.address_space_root
+        || peer_info.root_frame == mapped_info.address_space_root
+        || process::live_count() != live_before + 2
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    drop(mapped_ref);
+    drop(peer_ref);
+    close(mapped)?;
+    close(empty_peer)?;
+    if process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 6 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M5-G process ring3: kernel_before={:#x} process={:#x} kernel_after={:#x} code={USER_CODE_VA:#x} frame={:#x} cs=0x23 ss=0x1b vector=0xf2\n",
+        proof.original_kernel_cr3,
+        proof.observed_process_cr3 & !0xfff,
+        proof.restored_kernel_cr3,
+        proof.frame_address,
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-G process ring3 self-test: passed process_cr3=active_in_cpl3 iretq=ok user_rx=ok user_stack_writes=off tss_rsp0=used kernel_cr3=restored_before_rust frame_reclaim=6 if=masked scheduler=off callgate=off",
+    );
+    Ok(())
+}

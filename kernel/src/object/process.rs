@@ -69,6 +69,13 @@ impl ProcessObject {
         self.address_space.ci_cr3_roundtrip(pattern)
     }
 
+    #[cfg(feature = "m5g-ci-self-test")]
+    pub fn ci_ring3_process_roundtrip(
+        &self,
+    ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        self.address_space.ci_ring3_process_roundtrip()
+    }
+
     pub fn info(&self) -> ProcessInfo {
         ProcessInfo {
             identity: self.identity,
