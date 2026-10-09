@@ -160,9 +160,18 @@ fn verify_chain(
         } else {
             PARENT_FLAGS
         };
+        // Once this process PML4 has actually been loaded, the CPU may
+        // set ACCESSED on each paging level and DIRTY on the writable leaf.
+        // Preserve exact ownership/permission checks while tolerating only
+        // these architecturally maintained status bits.
+        let hardware_bits = if index == 3 {
+            PageTableFlags::ACCESSED | PageTableFlags::DIRTY
+        } else {
+            PageTableFlags::ACCESSED
+        };
         if entry.is_unused()
             || entry.addr().as_u64() != *expected_phys
-            || entry.flags() != expected_flags
+            || (entry.flags() & !hardware_bits) != expected_flags
         {
             return Err(MemoryError::ProcessUserLeafCorrupt);
         }
@@ -232,4 +241,107 @@ pub fn ci_probe_inactive_user_leaf(
             Ok(core::ptr::read_volatile(pointer as *const u64) == pattern)
         }
     })?
+}
+
+
+#[cfg(feature = "m5f-ci-self-test")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlledCr3Proof {
+    pub kernel_cr3_before: u64,
+    pub process_cr3_observed: u64,
+    pub kernel_cr3_after: u64,
+    pub virtual_readback: u64,
+    pub physical_readback: u64,
+    pub absent_from_kernel_root: bool,
+}
+
+#[cfg(feature = "m5f-ci-self-test")]
+pub fn ci_controlled_cr3_roundtrip(
+    root: PhysFrame,
+    mapping: &InactiveUserLeaf,
+    pattern: u64,
+) -> Result<ControlledCr3Proof, MemoryError> {
+    if crate::arch::in_interrupt() {
+        return Err(MemoryError::InvalidAddressSpaceRoot);
+    }
+
+    // Validate all four links, exact ownership and U+RW/NX before switching.
+    // The memory manager lock is released before loading another CR3.
+    let info = inspect_inactive_user_leaf(root, mapping)?;
+    if info.root_frame != root
+        || !info.ancestor_user_accessible
+        || !info.leaf_user_accessible
+        || !info.leaf_writable
+        || !info.leaf_non_executable
+    {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+
+    let absent_from_kernel_root = with_manager(|manager| {
+        matches!(
+            manager.mapper.translate(VirtAddr::new(mapping.virtual_address)),
+            TranslateResult::NotMapped
+        )
+    })?;
+    if !absent_from_kernel_root {
+        return Err(MemoryError::PageAlreadyMapped);
+    }
+
+    // The only CR3 switch takes place with IF=0 on the bootstrap CPU. No
+    // scheduler handoff, Rust callback, allocator or manager lock is active
+    // between the two CR3 writes.
+    let result = interrupts::without_interrupts(|| {
+        let (before, _) = Cr3::read();
+        let kernel_cr3_before = before.start_address().as_u64();
+        if kernel_cr3_before == root.start {
+            return Err(MemoryError::AddressSpaceRootActive);
+        }
+
+        // SAFETY: the inactive mapping and shared kernel-half entries were
+        // validated above, its process object remains alive throughout this
+        // function, and interrupts are disabled until kernel CR3 is restored.
+        let observed = unsafe {
+            super::process_cr3_probe::execute(
+                root.start,
+                mapping.virtual_address,
+                pattern,
+            )
+        };
+
+        let (actual_after, _) = Cr3::read();
+        let kernel_cr3_after = actual_after.start_address().as_u64();
+        Ok((
+            kernel_cr3_before,
+            observed,
+            kernel_cr3_after,
+        ))
+    })?;
+
+    let (kernel_cr3_before, observed, kernel_cr3_after) = result;
+    // All checks happen *after* the assembly has already restored CR3.
+    if observed.process_cr3_observed != root.start
+        || observed.kernel_cr3_restored & !0xfff != kernel_cr3_before
+        || kernel_cr3_after != kernel_cr3_before
+        || observed.virtual_readback != pattern
+    {
+        return Err(MemoryError::ProcessUserLeafCorrupt);
+    }
+
+    let physical_readback = with_manager(|manager| {
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        unsafe { core::ptr::read_volatile(ptr as *const u64) }
+    })?;
+
+    if physical_readback != pattern {
+        return Err(MemoryError::SelfTestDataMismatch);
+    }
+
+    Ok(ControlledCr3Proof {
+        kernel_cr3_before,
+        process_cr3_observed: observed.process_cr3_observed,
+        kernel_cr3_after,
+        virtual_readback: observed.virtual_readback,
+        physical_readback,
+        absent_from_kernel_root,
+    })
 }

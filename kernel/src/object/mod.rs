@@ -647,3 +647,86 @@ pub fn process_user_leaf_ci_self_test() -> Result<(), ObjectError> {
 
     Ok(())
 }
+
+
+#[cfg(feature = "m5f-ci-self-test")]
+pub fn process_cr3_roundtrip_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+
+    const USER_VA: u64 = 0x0000_5000_2000_0000;
+    const PATTERN: u64 = 0x4d35_4650_524f_4345;
+
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+
+    let live_before = process::live_count();
+    let before = crate::memory::frame_reuse_stats()?;
+
+    let mapped = create_process_with_user_leaf(
+        profile, Rights::READ, USER_VA, PagePermissions::user_read_write(),
+    )?;
+    let empty_peer = create_process(profile, Rights::READ)?;
+    let mapped_info = process_info(mapped)?;
+    let empty_info = process_info(empty_peer)?;
+
+    // Hold a strong object reference for the entire switch. Closing a handle
+    // cannot reclaim the active process root while it is being probed.
+    let mapped_ref = handle::get(mapped, Rights::READ)?;
+    let peer_ref = handle::get(empty_peer, Rights::READ)?;
+    let proof = match mapped_ref.as_ref() {
+        FwObject::Process(p) => p.ci_cr3_roundtrip(PATTERN)?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let peer = match peer_ref.as_ref() {
+        FwObject::Process(p) => p.inspect_address_space()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+
+    if proof.kernel_cr3_before != proof.kernel_cr3_after
+        || proof.process_cr3_observed != mapped_info.address_space_root.start
+        || proof.kernel_cr3_before == proof.process_cr3_observed
+        || proof.virtual_readback != PATTERN
+        || proof.physical_readback != PATTERN
+        || !proof.absent_from_kernel_root
+        || !peer.lower_half_empty
+        || !peer.higher_half_matches_kernel
+        || peer.higher_half_user_accessible
+        || peer.root_frame != empty_info.address_space_root
+        || peer.root_frame == mapped_info.address_space_root
+        || process::live_count() != live_before + 2
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    drop(mapped_ref);
+    drop(peer_ref);
+    close(mapped)?;
+    close(empty_peer)?;
+
+    if process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 6 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M5-F CR3 roundtrip: kernel_before={:#x} process={:#x} kernel_after={:#x} virtual={USER_VA:#x} value={PATTERN:#x} peer_root={:#x} kernel_leaf_absent=ok\n",
+        proof.kernel_cr3_before,
+        proof.process_cr3_observed,
+        proof.kernel_cr3_after,
+        peer.root_frame.start,
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-F process CR3 self-test: passed process_cr3=loaded user_virtual_rw=ok kernel_cr3=restored kernel_root_leaf=absent physical_direct_map=match peer_isolated=ok frames_returned=6 if=masked cpl0=only preemption=off callgate=off",
+    );
+    Ok(())
+}

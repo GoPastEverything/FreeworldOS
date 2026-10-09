@@ -61,6 +61,14 @@ impl ProcessObject {
         self.address_space.ci_probe_user_leaf(pattern)
     }
 
+    #[cfg(feature = "m5f-ci-self-test")]
+    pub fn ci_cr3_roundtrip(
+        &self,
+        pattern: u64,
+    ) -> Result<crate::arch::memory::ControlledCr3Proof, MemoryError> {
+        self.address_space.ci_cr3_roundtrip(pattern)
+    }
+
     pub fn info(&self) -> ProcessInfo {
         ProcessInfo {
             identity: self.identity,
