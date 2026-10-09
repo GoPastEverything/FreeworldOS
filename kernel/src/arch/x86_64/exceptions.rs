@@ -78,6 +78,13 @@ lazy_static! {
                 .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         }
 
+        #[cfg(feature = "m5g-ci-self-test")]
+        unsafe {
+            idt[super::process_ring3::RETURN_VECTOR]
+                .set_handler_addr(super::process_ring3::handler_addr())
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        }
+
         idt[apic::SPURIOUS_VECTOR].set_handler_fn(apic_spurious_interrupt);
 
         idt

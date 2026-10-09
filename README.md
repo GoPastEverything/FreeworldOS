@@ -72,7 +72,7 @@ docs/
 - **M3.5-B:** ✅ structured event ring + panic/fatal backtrace + QEMU/GDB tools + named self-tests
 - **M3.5-C:** ◐ C1–C2l merged; C2m adds the production kernel-task spawn API and proves two spawned tasks through timer dispatch, Interrupt resume, safe exit and off-stack reclamation; priorities and SMP remain absent
 - **M4:** ◐ M4-A/B establish the persistent native graph; M4-C adds explicit root aliases; M4-D adds Linux byte-path decoding; M4-E adds Windows DOS absolute UTF-16 decoding with lossless WTF-8 handling for unpaired surrogates
-- **M5:** ◐ M5-A/B establish the split/selectors/TSS; M5-C proves a controlled CPL3 round-trip; M5-D adds process-owned inactive PML4 roots; M5-E maps and reclaims one private user leaf; M5-F proves a controlled CPL0-only switch to that process CR3, virtual-memory write/read and restoration of the kernel CR3. No user task or callgate yet
+- **M5:** ◐ M5-A/B establish the split/selectors/TSS; M5-C proves a controlled CPL3 round-trip; M5-D adds process-owned inactive PML4 roots; M5-E maps and reclaims one private user leaf; M5-F proves a controlled CPL0-only process CR3 round-trip; M5-G proves a one-shot CPL3 entry on the process root and restores kernel CR3 in the CI-only interrupt return gate. No scheduled user task, writable user stack, or callgate yet
 - **M6:** ELF image decoder and minimal LinuxFacet syscall interception
 - **M7:** PE image decoder and minimal WinFacet DLL/API surface
 - **M8:** FW_MODULE loader and Bridge ABI v1

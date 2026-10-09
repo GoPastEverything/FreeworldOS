@@ -154,7 +154,7 @@ pub fn user_data_selector() -> SegmentSelector {
     GDT.1.user_data
 }
 
-#[cfg(feature = "m5c-ci-self-test")]
+#[cfg(any(feature = "m5c-ci-self-test", feature = "m5g-ci-self-test"))]
 pub fn restore_kernel_data_segments() {
     // SAFETY: GDT is loaded and this is called at CPL0 with interrupts
     // disabled before leaving the M5-C test-only return gate.
@@ -165,7 +165,7 @@ pub fn restore_kernel_data_segments() {
     }
 }
 
-#[cfg(feature = "m5c-ci-self-test")]
+#[cfg(any(feature = "m5c-ci-self-test", feature = "m5g-ci-self-test"))]
 pub fn kernel_data_selector() -> SegmentSelector {
     GDT.1.data
 }

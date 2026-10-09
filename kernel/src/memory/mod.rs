@@ -77,6 +77,14 @@ impl ProcessAddressSpace {
             self.root_frame, leaf, pattern
         )
     }
+
+    #[cfg(feature = "m5g-ci-self-test")]
+    pub fn ci_ring3_process_roundtrip(
+        &self,
+    ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        leaf.ci_ring3_on_process_root(self.root_frame)
+    }
 }
 
 impl Drop for ProcessAddressSpace {
