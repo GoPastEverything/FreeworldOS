@@ -23,6 +23,8 @@ pub struct ProcessInfo {
 pub struct ProcessObject {
     identity: ProcessIdentity,
     address_space: ProcessAddressSpace,
+    #[cfg(feature = "m5i-ci-self-test")]
+    kernel_stack: Option<super::task::KernelStack>,
 }
 
 impl ProcessObject {
@@ -39,6 +41,8 @@ impl ProcessObject {
                 profile,
             },
             address_space,
+            #[cfg(feature = "m5i-ci-self-test")]
+            kernel_stack: None,
         })
     }
 
@@ -58,6 +62,20 @@ impl ProcessObject {
     #[cfg(feature = "m5h-ci-self-test")]
     pub fn ci_stack_push(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
         self.address_space.ci_stack_push()
+    }
+
+    #[cfg(feature = "m5i-ci-self-test")]
+    pub fn allocate_private_kernel_stack(&mut self) -> Result<(), super::ObjectError> {
+        assert!(self.kernel_stack.is_none());
+        self.kernel_stack = Some(super::task::KernelStack::new()?);
+        Ok(())
+    }
+
+    #[cfg(feature = "m5i-ci-self-test")]
+    pub fn ci_private_rsp0(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        let stack = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        let (bottom, top) = stack.bounds();
+        self.address_space.ci_private_rsp0(bottom, top)
     }
 
     pub fn inspect_user_leaf(
