@@ -971,7 +971,6 @@ pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
         memory::PagePermissions,
     };
     const CODE: u64 = 0x0000_5000_3000_0000;
-    const STACK: u64 = 0x0000_5000_3000_1000;
     const FRAME_BYTES: u64 = 160;
 
     let profile = ExecutionProfile {
@@ -982,7 +981,7 @@ pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
     };
     let live_before = process::live_count();
     let before = crate::memory::frame_reuse_stats()?;
-    let bootstrap_rsp0 = crate::arch::gdt::read_rsp0();
+    let bootstrap_rsp0 = crate::arch::current_tss_rsp0();
     if bootstrap_rsp0 != crate::arch::ring0_privilege_stack_top() {
         return Err(ObjectError::SelfTestFailed);
     }
@@ -1036,7 +1035,7 @@ pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
         FwObject::Process(p) => p.ci_private_rsp0()?,
         _ => return Err(ObjectError::WrongObjectType),
     };
-    if crate::arch::gdt::read_rsp0() != bootstrap_rsp0
+    if crate::arch::current_tss_rsp0() != bootstrap_rsp0
         || proof_a.observed_process_cr3 & !0xfff != root_a.start
         || proof_a.original_kernel_cr3 != proof_a.restored_kernel_cr3
         || proof_a.frame_address < bounds_a.0
@@ -1051,7 +1050,7 @@ pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
         FwObject::Process(p) => p.ci_private_rsp0()?,
         _ => return Err(ObjectError::WrongObjectType),
     };
-    if crate::arch::gdt::read_rsp0() != bootstrap_rsp0
+    if crate::arch::current_tss_rsp0() != bootstrap_rsp0
         || proof_b.observed_process_cr3 & !0xfff != root_b.start
         || proof_b.original_kernel_cr3 != proof_b.restored_kernel_cr3
         || proof_b.original_kernel_cr3 != proof_a.original_kernel_cr3
@@ -1068,7 +1067,7 @@ pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
     close(handle_a)?;
     close(handle_b)?;
     if process::live_count() != live_before
-        || crate::arch::gdt::read_rsp0() != bootstrap_rsp0
+        || crate::arch::current_tss_rsp0() != bootstrap_rsp0
     {
         return Err(ObjectError::SelfTestFailed);
     }
