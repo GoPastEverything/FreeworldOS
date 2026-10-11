@@ -1,4 +1,4 @@
-use core::ptr;
+use core::{cell::UnsafeCell, ptr};
 use lazy_static::lazy_static;
 use x86_64::{
     instructions::{
@@ -60,7 +60,7 @@ fn ring0_privilege_stack_bottom() -> VirtAddr {
 
 #[cfg(feature = "m5i-ci-self-test")]
 pub fn read_rsp0() -> u64 {
-    let tss: *const TaskStateSegment = &*TSS;
+    let tss: *const TaskStateSegment = TSS.0.get();
     let ptr = unsafe { ptr::addr_of!((*tss).privilege_stack_table).cast::<VirtAddr>().add(0) };
     unsafe { ptr.read_unaligned().as_u64() }
 }
@@ -69,7 +69,7 @@ pub fn read_rsp0() -> u64 {
 pub unsafe fn write_rsp0(value: u64) {
     assert_eq!(value & 0xf, 0);
     assert!(crate::memory::address_space::is_kernel_address(value - 1));
-    let tss = (&*TSS as *const TaskStateSegment).cast_mut();
+    let tss = TSS.0.get();
     let ptr = unsafe { ptr::addr_of_mut!((*tss).privilege_stack_table).cast::<VirtAddr>().add(0) };
     unsafe { ptr.write_unaligned(VirtAddr::new(value)) };
 }
@@ -78,8 +78,12 @@ pub fn ring0_privilege_stack_top() -> VirtAddr {
     stack_top(ptr::addr_of!(RING0_PRIVILEGE_STACK))
 }
 
+struct MutableTss(UnsafeCell<TaskStateSegment>);
+// Bootstrap-only CPU TSS; M5-I changes RSP0 with IF=0 and no scheduling.
+unsafe impl Sync for MutableTss {}
+
 lazy_static! {
-    static ref TSS: TaskStateSegment = {
+    static ref TSS: MutableTss = {
         let mut tss = TaskStateSegment::new();
 
         // A CPU transition from CPL3 to CPL0 uses privilege_stack_table[0].
@@ -96,7 +100,7 @@ lazy_static! {
         tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] =
             stack_top(ptr::addr_of!(MACHINE_CHECK_STACK));
 
-        tss
+        MutableTss(UnsafeCell::new(tss))
     };
 
     static ref GDT: (GlobalDescriptorTable, Selectors) = {
@@ -117,7 +121,7 @@ lazy_static! {
         let user_code =
             SegmentSelector::new(user_code_gdt.index(), PrivilegeLevel::Ring3);
 
-        let tss = gdt.append(Descriptor::tss_segment(&TSS));
+        let tss = gdt.append(Descriptor::tss_segment(unsafe { &*TSS.0.get() }));
 
         assert_eq!(
             data.index(),
@@ -231,7 +235,7 @@ pub fn ci_self_test() {
     );
     // TaskStateSegment is packed. Do not create a reference to its u64-sized
     // privilege_stack_table field; read RSP0 through a raw pointer instead.
-    let tss_ptr: *const TaskStateSegment = &*TSS;
+    let tss_ptr: *const TaskStateSegment = TSS.0.get();
     let rsp0_ptr = unsafe {
         core::ptr::addr_of!((*tss_ptr).privilege_stack_table)
             .cast::<VirtAddr>()
