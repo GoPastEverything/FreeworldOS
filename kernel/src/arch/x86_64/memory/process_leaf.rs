@@ -489,6 +489,20 @@ pub fn ci_process_stack_push(
     root: PhysFrame,
     mapping: &InactiveUserLeaf,
 ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    ci_process_stack_push_impl(root, mapping, None)
+}
+
+#[cfg(feature = "m5i-ci-self-test")]
+pub fn ci_process_stack_push_private(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    ci_process_stack_push_impl(root, mapping, Some((bottom, top)))
+}
+
+#[cfg(feature = "m5h-ci-self-test")]
+fn ci_process_stack_push_impl(
+    root: PhysFrame, mapping: &InactiveUserLeaf, private: Option<(u64, u64)>
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
     const CODE: u64 = 0x0000_5000_3000_0000;
     const STACK: u64 = 0x0000_5000_3000_1000;
     let stack_frame = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
@@ -508,7 +522,14 @@ pub fn ci_process_stack_push(
         Ok(())
     })??;
     // The upper bound is exclusive. PUSH writes at STACK+0xff8.
-    let proof = unsafe { crate::arch::process_ring3::enter_once_push(root.start, CODE, STACK + PAGE_SIZE) };
+    let proof = if let Some((bottom, top)) = private {
+        #[cfg(feature = "m5i-ci-self-test")]
+        { unsafe { crate::arch::process_ring3::enter_once_private_rsp0(root.start, CODE, STACK + PAGE_SIZE, bottom, top) } }
+        #[cfg(not(feature = "m5i-ci-self-test"))]
+        { let _ = (bottom, top); return Err(MemoryError::InvalidAddressSpaceRoot); }
+    } else {
+        unsafe { crate::arch::process_ring3::enter_once_push(root.start, CODE, STACK + PAGE_SIZE) }
+    };
     // Rust runs only after the test gate has restored kernel CR3.
     if proof.observed_process_cr3 & !0xfff != root.start
         || proof.original_kernel_cr3 != proof.restored_kernel_cr3

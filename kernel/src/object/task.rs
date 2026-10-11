@@ -407,7 +407,7 @@ impl Drop for TaskObject {
     }
 }
 
-struct KernelStack {
+pub(crate) struct KernelStack {
     guard_page: u64,
     stack_bottom: u64,
     stack_top: u64,
@@ -416,7 +416,7 @@ struct KernelStack {
 }
 
 impl KernelStack {
-    fn new() -> Result<Self, ObjectError> {
+    pub(crate) fn new() -> Result<Self, ObjectError> {
         let slot = NEXT_STACK_SLOT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 (current < MAX_TASK_STACK_SLOTS).then_some(current + 1)
@@ -489,6 +489,8 @@ impl KernelStack {
 
         Ok(stack)
     }
+
+    pub(crate) fn bounds(&self) -> (u64, u64) { (self.stack_bottom, self.stack_top) }
 
     fn initial_stack_pointer(&self) -> u64 {
         self.stack_top - 8

@@ -68,6 +68,12 @@ static EXPECTED_ROOT: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RIP: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RSP: AtomicU64 = AtomicU64::new(0);
 static FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5i-ci-self-test")]
+static PRIVATE_STACK_BOTTOM: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5i-ci-self-test")]
+static PRIVATE_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5i-ci-self-test")]
+static PRIVATE_STACK_MODE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ring3ProcessProof {
@@ -184,6 +190,30 @@ pub unsafe fn enter_once_push(root_phys: u64, user_rip: u64, user_rsp: u64) -> R
     unsafe { enter_mode(root_phys, user_rip, user_rsp, true) }
 }
 
+#[cfg(feature = "m5i-ci-self-test")]
+pub unsafe fn enter_once_private_rsp0(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64
+) -> Ring3ProcessProof {
+    assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert_eq!(top & 0xf, 0);
+    assert!(bottom >= 0xffff_8000_0000_0000);
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+    PRIVATE_STACK_TOP.store(top, Ordering::Release);
+    PRIVATE_STACK_MODE.store(true, Ordering::Release);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let saved = gdt::read_rsp0();
+        unsafe { gdt::write_rsp0(top); }
+        assert_eq!(gdt::read_rsp0(), top);
+        let proof = unsafe { enter_mode(root_phys, user_rip, user_rsp, true) };
+        unsafe { gdt::write_rsp0(saved); }
+        assert_eq!(gdt::read_rsp0(), saved);
+        assert!(proof.frame_address >= bottom && proof.frame_address + FRAME_SIZE as u64 <= top);
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        proof
+    })
+}
+
 unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bool) -> Ring3ProcessProof {
     assert!(!super::in_interrupt(), "M5-G called from interrupt handler");
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
@@ -248,8 +278,22 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     assert!(ARMED.swap(false, Ordering::AcqRel), "M5-G return not armed");
 
     let frame_address = frame as u64;
-    let top = super::ring0_privilege_stack_top();
-    let bottom = top - gdt::RING0_PRIVILEGE_STACK_SIZE as u64;
+    let (bottom, top) = {
+        #[cfg(feature = "m5i-ci-self-test")]
+        {
+            if PRIVATE_STACK_MODE.load(Ordering::Acquire) {
+                (PRIVATE_STACK_BOTTOM.load(Ordering::Acquire), PRIVATE_STACK_TOP.load(Ordering::Acquire))
+            } else {
+                let top = super::ring0_privilege_stack_top();
+                (top - gdt::RING0_PRIVILEGE_STACK_SIZE as u64, top)
+            }
+        }
+        #[cfg(not(feature = "m5i-ci-self-test"))]
+        {
+            let top = super::ring0_privilege_stack_top();
+            (top - gdt::RING0_PRIVILEGE_STACK_SIZE as u64, top)
+        }
+    };
     assert!(frame_address >= bottom && frame_address + FRAME_SIZE as u64 <= top);
 
     let frame = unsafe { &*frame };
@@ -273,6 +317,15 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     FRAME_ADDRESS.store(frame_address, Ordering::Release);
     RETURN_SEEN.store(true, Ordering::Release);
 
+    #[cfg(feature = "m5i-ci-self-test")]
+    if PRIVATE_STACK_MODE.load(Ordering::Acquire) {
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-I private RSP0 gate: frame={frame_address:#x} bottom={bottom:#x} top={top:#x} bytes=160 process_cr3={:#x} kernel_cr3=restored\\n",
+            process_cr3 & !0xfff
+        ));
+        drop(scope);
+        return;
+    }
     if PUSH_MODE.load(Ordering::Acquire) {
         serial::write_fmt(format_args!(
             "FreeWorldOS: M5-H return gate: vector={RETURN_VECTOR:#x} process_cr3={:#x} user_cs={:#x} user_ss={:#x} user_rip={:#x} user_rsp={:#x} rsp0=ok kernel_cr3=restored marker=ok\n",
