@@ -50,6 +50,16 @@ impl ProcessObject {
         self.address_space.map_one_user_leaf(address, permissions)
     }
 
+    #[cfg(feature = "m5h-ci-self-test")]
+    pub fn map_adjacent_user_stack(&mut self) -> Result<(), MemoryError> {
+        self.address_space.map_adjacent_user_stack()
+    }
+
+    #[cfg(feature = "m5h-ci-self-test")]
+    pub fn ci_stack_push(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        self.address_space.ci_stack_push()
+    }
+
     pub fn inspect_user_leaf(
         &self,
     ) -> Result<crate::arch::memory::InactiveUserLeafInfo, MemoryError> {
