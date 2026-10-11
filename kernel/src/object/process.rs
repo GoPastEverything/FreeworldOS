@@ -65,10 +65,13 @@ impl ProcessObject {
     }
 
     #[cfg(feature = "m5i-ci-self-test")]
-    pub fn allocate_private_kernel_stack(&mut self) -> Result<(), super::ObjectError> {
-        assert!(self.kernel_stack.is_none());
-        self.kernel_stack = Some(super::task::KernelStack::new()?);
-        Ok(())
+    pub fn new_with_private_kernel_stack(profile: ExecutionProfile) -> Result<Self, super::ObjectError> {
+        // Stack must be mapped in the higher half BEFORE the process PML4
+        // snapshots its kernel-half entries.
+        let stack = super::task::KernelStack::new()?;
+        let mut process = Self::new(profile)?;
+        process.kernel_stack = Some(stack);
+        Ok(process)
     }
 
     #[cfg(feature = "m5i-ci-self-test")]
