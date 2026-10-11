@@ -58,6 +58,22 @@ fn ring0_privilege_stack_bottom() -> VirtAddr {
     VirtAddr::from_ptr(ptr::addr_of!(RING0_PRIVILEGE_STACK))
 }
 
+#[cfg(feature = "m5i-ci-self-test")]
+pub fn read_rsp0() -> u64 {
+    let tss: *const TaskStateSegment = &*TSS;
+    let ptr = unsafe { ptr::addr_of!((*tss).privilege_stack_table).cast::<VirtAddr>().add(0) };
+    unsafe { ptr.read_unaligned().as_u64() }
+}
+
+#[cfg(feature = "m5i-ci-self-test")]
+pub unsafe fn write_rsp0(value: u64) {
+    assert_eq!(value & 0xf, 0);
+    assert!(crate::memory::address_space::is_kernel_address(value - 1));
+    let tss = (&*TSS as *const TaskStateSegment).cast_mut();
+    let ptr = unsafe { ptr::addr_of_mut!((*tss).privilege_stack_table).cast::<VirtAddr>().add(0) };
+    unsafe { ptr.write_unaligned(VirtAddr::new(value)) };
+}
+
 pub fn ring0_privilege_stack_top() -> VirtAddr {
     stack_top(ptr::addr_of!(RING0_PRIVILEGE_STACK))
 }
