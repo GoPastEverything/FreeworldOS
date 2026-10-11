@@ -275,7 +275,7 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
 
     if PUSH_MODE.load(Ordering::Acquire) {
         serial::write_fmt(format_args!(
-            "FreeWorldOS: M5-H return gate: vector={RETURN_VECTOR:#x} process_cr3={:#x} user_cs={:#x} user_ss={:#x} user_rip={:#x} user_rsp={:#x} rsp0=ok kernel_cr3=restored marker=ok\\n",
+            "FreeWorldOS: M5-H return gate: vector={RETURN_VECTOR:#x} process_cr3={:#x} user_cs={:#x} user_ss={:#x} user_rip={:#x} user_rsp={:#x} rsp0=ok kernel_cr3=restored marker=ok\n",
             process_cr3 & !0xfff, frame.cs, frame.ss, frame.rip, frame.rsp,
         ));
         return;
