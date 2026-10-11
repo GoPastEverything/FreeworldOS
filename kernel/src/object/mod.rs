@@ -907,10 +907,9 @@ pub fn process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
     let live_before = process::live_count();
     let before = crate::memory::frame_reuse_stats()?;
     // Both mappings are installed before the immutable process is published.
-    let mut process = ProcessObject::new(profile)?;
+    let mut process = ProcessObject::new_with_private_kernel_stack(profile)?;
     process.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
     process.map_adjacent_user_stack()?;
-    process.allocate_private_kernel_stack()?;
     let mapped = handle::insert(Arc::new(FwObject::Process(process)), Rights::READ)?;
     let empty_peer = create_process(profile, Rights::READ)?;
     let mapped_info = process_info(mapped)?;
