@@ -36,6 +36,19 @@ pub const fn stub_bytes() -> [u8; CODE_SIZE] {
 }
 
 const RETURN_RIP_OFFSET: u64 = 12;
+const PUSH_RETURN_RIP_OFFSET: u64 = 13;
+pub const PUSH_CODE_SIZE: usize = 15;
+pub const fn push_stub_bytes() -> [u8; PUSH_CODE_SIZE] {
+    [
+        0x48, 0xb8,
+        (USER_MARKER >> 0) as u8, (USER_MARKER >> 8) as u8,
+        (USER_MARKER >> 16) as u8, (USER_MARKER >> 24) as u8,
+        (USER_MARKER >> 32) as u8, (USER_MARKER >> 40) as u8,
+        (USER_MARKER >> 48) as u8, (USER_MARKER >> 56) as u8,
+        0x50, 0xcd, RETURN_VECTOR, 0x0f, 0x0b,
+    ]
+}
+
 
 #[repr(C)]
 struct UserFrame {
@@ -49,6 +62,7 @@ const FRAME_SIZE: usize = size_of::<UserFrame>();
 const _: () = assert!(FRAME_SIZE == 160);
 
 static ARMED: AtomicBool = AtomicBool::new(false);
+static PUSH_MODE: AtomicBool = AtomicBool::new(false);
 static RETURN_SEEN: AtomicBool = AtomicBool::new(false);
 static EXPECTED_ROOT: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RIP: AtomicU64 = AtomicU64::new(0);
@@ -160,10 +174,22 @@ pub fn handler_addr() -> VirtAddr {
 // returns, with the expected user stub installed and the higher-half kernel
 // mappings shared. There may be no other user-mode entry or scheduler handoff.
 pub unsafe fn enter_once(root_phys: u64, user_rip: u64, user_rsp: u64) -> Ring3ProcessProof {
+    unsafe { enter_mode(root_phys, user_rip, user_rsp, false) }
+}
+
+#[cfg(feature = "m5h-ci-self-test")]
+pub unsafe fn enter_once_push(root_phys: u64, user_rip: u64, user_rsp: u64) -> Ring3ProcessProof {
+    assert_eq!(user_rip, 0x0000_5000_3000_0000);
+    assert_eq!(user_rsp, 0x0000_5000_3000_2000);
+    unsafe { enter_mode(root_phys, user_rip, user_rsp, true) }
+}
+
+unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bool) -> Ring3ProcessProof {
     assert!(!super::in_interrupt(), "M5-G called from interrupt handler");
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
-    EXPECTED_RIP.store(user_rip + RETURN_RIP_OFFSET, Ordering::Release);
-    EXPECTED_RSP.store(user_rsp, Ordering::Release);
+    EXPECTED_RIP.store(user_rip + if push_mode { PUSH_RETURN_RIP_OFFSET } else { RETURN_RIP_OFFSET }, Ordering::Release);
+    EXPECTED_RSP.store(user_rsp - if push_mode { 8 } else { 0 }, Ordering::Release);
+    PUSH_MODE.store(push_mode, Ordering::Release);
     FRAME_ADDRESS.store(0, Ordering::Release);
     RETURN_SEEN.store(false, Ordering::Release);
     assert!(!ARMED.swap(true, Ordering::AcqRel), "M5-G already armed");
@@ -196,6 +222,10 @@ pub unsafe fn enter_once(root_phys: u64, user_rip: u64, user_rsp: u64) -> Ring3P
         assert_eq!(saved_kernel_cr3 & !0xfff, original_kernel_cr3);
         assert_eq!(restored_kernel_cr3, original_kernel_cr3);
         assert_eq!(observed_process_cr3 & !0xfff, root_phys);
+        if push_mode {
+            assert_eq!(EXPECTED_RIP.load(Ordering::Acquire), 0x0000_5000_3000_000d);
+            assert_eq!(EXPECTED_RSP.load(Ordering::Acquire), 0x0000_5000_3000_1ff8);
+        }
 
         Ring3ProcessProof {
             original_kernel_cr3,
@@ -243,6 +273,13 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     FRAME_ADDRESS.store(frame_address, Ordering::Release);
     RETURN_SEEN.store(true, Ordering::Release);
 
+    if PUSH_MODE.load(Ordering::Acquire) {
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-H return gate: vector={RETURN_VECTOR:#x} process_cr3={:#x} user_cs={:#x} user_ss={:#x} user_rip={:#x} user_rsp={:#x} rsp0=ok kernel_cr3=restored marker=ok\\n",
+            process_cr3 & !0xfff, frame.cs, frame.ss, frame.rip, frame.rsp,
+        ));
+        return;
+    }
     serial::write_fmt(format_args!(
         "FreeWorldOS: M5-G return gate: vector={RETURN_VECTOR:#x} process_cr3={:#x} user_cs={:#x} user_ss={:#x} user_rip={:#x} user_rsp={:#x} rsp0=ok kernel_cr3=restored marker=ok\n",
         process_cr3 & !0xfff, frame.cs, frame.ss, frame.rip, frame.rsp,
