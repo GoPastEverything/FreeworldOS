@@ -10,6 +10,7 @@ pub struct InactiveUserLeaf {
     l2: PhysFrame,
     l1: PhysFrame,
     leaf_flags: PageTableFlags,
+    stack_frame: Option<PhysFrame>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,7 +133,44 @@ pub fn map_one_inactive_user_leaf(
             l2,
             l1,
             leaf_flags: flags,
+            stack_frame: None,
         })
+    })?
+}
+
+// M5-H: one extra PML1 slot in the existing chain, not another subtree.
+#[cfg(feature = "m5h-ci-self-test")]
+pub fn map_adjacent_inactive_stack_leaf(
+    root: PhysFrame,
+    mapping: &mut InactiveUserLeaf,
+) -> Result<(), MemoryError> {
+    if mapping.virtual_address != 0x0000_5000_3000_0000
+        || mapping.stack_frame.is_some()
+        || mapping.leaf_flags.contains(PageTableFlags::WRITABLE)
+        || mapping.leaf_flags.contains(PageTableFlags::NO_EXECUTE)
+    {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    let stack_address = mapping.virtual_address + PAGE_SIZE;
+    let code_idx = indices(mapping.virtual_address);
+    let stack_idx = indices(stack_address);
+    if code_idx[..3] != stack_idx[..3] || stack_idx[3] != code_idx[3] + 1 {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let t1 = unsafe { &mut *table_pointer(manager, mapping.l1.start) };
+        if !t1[stack_idx[3]].is_unused() {
+            return Err(MemoryError::ProcessUserLeafAlreadyMapped);
+        }
+        let next = manager.allocator.next_frame().ok_or(MemoryError::OutOfFrames)?;
+        let frame = PhysFrame { start: next.start_address().as_u64() };
+        let pointer = manager.allocator.direct_map_pointer(frame.start);
+        unsafe { core::ptr::write_bytes(pointer, 0, PAGE_SIZE as usize) };
+        let flags = leaf_flags(PagePermissions::user_read_write())?;
+        t1[stack_idx[3]].set_addr(PhysAddr::new(frame.start), flags);
+        mapping.stack_frame = Some(frame);
+        Ok(())
     })?
 }
 
@@ -164,7 +202,7 @@ fn verify_chain(
         // set ACCESSED on each paging level and DIRTY on the writable leaf.
         // Preserve exact ownership/permission checks while tolerating only
         // these architecturally maintained status bits.
-        let hardware_bits = if index == 3 {
+        let hardware_bits = if index == 3 && mapping.leaf_flags.contains(PageTableFlags::WRITABLE) {
             PageTableFlags::ACCESSED | PageTableFlags::DIRTY
         } else {
             PageTableFlags::ACCESSED
@@ -176,11 +214,23 @@ fn verify_chain(
             return Err(MemoryError::ProcessUserLeafCorrupt);
         }
     }
+    let stack_idx = indices(mapping.virtual_address + PAGE_SIZE)[3];
+    if let Some(stack) = mapping.stack_frame {
+        let entry = &t1[stack_idx];
+        let expected_flags = leaf_flags(PagePermissions::user_read_write())?;
+        let allowed_hardware = PageTableFlags::ACCESSED | PageTableFlags::DIRTY;
+        if entry.is_unused()
+            || entry.addr().as_u64() != stack.start
+            || (entry.flags() & !allowed_hardware) != expected_flags
+        {
+            return Err(MemoryError::ProcessUserLeafCorrupt);
+        }
+    }
     if (0..PML4_LOWER_HALF_ENTRIES)
         .any(|index| index != idx[0] && !pml4[index].is_unused())
         || (0..512).any(|index| index != idx[1] && !t3[index].is_unused())
         || (0..512).any(|index| index != idx[2] && !t2[index].is_unused())
-        || (0..512).any(|index| index != idx[3] && !t1[index].is_unused())
+        || (0..512).any(|index| index != idx[3] && (mapping.stack_frame.is_none() || index != stack_idx) && !t1[index].is_unused())
     {
         return Err(MemoryError::ProcessUserLeafCorrupt);
     }
@@ -216,8 +266,16 @@ pub fn destroy_inactive_user_leaf(
         // SAFETY: inactive process mapping with no user executor or DMA owner.
         // Detach from its root before returning any descendant frame.
         let pml4 = unsafe { &mut *table_pointer(manager, root.start) };
+        let t1 = unsafe { &mut *table_pointer(manager, mapping.l1.start) };
+        t1[idx[3]].set_unused();
+        if mapping.stack_frame.is_some() {
+            t1[indices(mapping.virtual_address + PAGE_SIZE)[3]].set_unused();
+        }
         pml4[idx[0]].set_unused();
 
+        if let Some(stack) = mapping.stack_frame {
+            manager.allocator.release_frame(stack)?;
+        }
         for frame in [mapping.data_frame, mapping.l1, mapping.l2, mapping.l3] {
             manager.allocator.release_frame(frame)?;
         }
@@ -424,4 +482,48 @@ impl InactiveUserLeaf {
     ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
         ci_process_ring3_roundtrip(root, self)
     }
+}
+
+#[cfg(feature = "m5h-ci-self-test")]
+pub fn ci_process_stack_push(
+    root: PhysFrame,
+    mapping: &InactiveUserLeaf,
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const STACK: u64 = 0x0000_5000_3000_1000;
+    let stack_frame = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    if mapping.virtual_address != CODE {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        if !matches!(manager.mapper.translate(VirtAddr::new(CODE)), TranslateResult::NotMapped)
+            || !matches!(manager.mapper.translate(VirtAddr::new(STACK)), TranslateResult::NotMapped)
+        {
+            return Err(MemoryError::PageAlreadyMapped);
+        }
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let bytes = crate::arch::process_ring3::push_stub_bytes();
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+        Ok(())
+    })??;
+    // The upper bound is exclusive. PUSH writes at STACK+0xff8.
+    let proof = unsafe { crate::arch::process_ring3::enter_once_push(root.start, CODE, STACK + PAGE_SIZE) };
+    // Rust runs only after the test gate has restored kernel CR3.
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address == 0
+    {
+        return Err(MemoryError::ProcessUserLeafCorrupt);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let pointer = manager.allocator.direct_map_pointer(stack_frame.start);
+        let at_push = unsafe { core::ptr::read_volatile(pointer.add(PAGE_SIZE as usize - 8) as *const u64) };
+        if at_push != crate::arch::process_ring3::USER_MARKER {
+            return Err(MemoryError::SelfTestDataMismatch);
+        }
+        Ok(())
+    })??;
+    Ok(proof)
 }
