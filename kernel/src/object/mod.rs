@@ -815,3 +815,77 @@ pub fn process_ring3_cr3_ci_self_test() -> Result<(), ObjectError> {
     );
     Ok(())
 }
+
+#[cfg(feature = "m5h-ci-self-test")]
+pub fn process_user_stack_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const STACK: u64 = 0x0000_5000_3000_1000;
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+    let live_before = process::live_count();
+    let before = crate::memory::frame_reuse_stats()?;
+    // Both mappings are installed before the immutable process is published.
+    let mut process = ProcessObject::new(profile)?;
+    process.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    process.map_adjacent_user_stack()?;
+    let mapped = handle::insert(Arc::new(FwObject::Process(process)), Rights::READ)?;
+    let empty_peer = create_process(profile, Rights::READ)?;
+    let mapped_info = process_info(mapped)?;
+    let empty_info = process_info(empty_peer)?;
+    let mapped_ref = handle::get(mapped, Rights::READ)?;
+    let peer_ref = handle::get(empty_peer, Rights::READ)?;
+    let (proof, code) = match mapped_ref.as_ref() {
+        FwObject::Process(p) => (p.ci_stack_push()?, p.inspect_user_leaf()?),
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let peer = match peer_ref.as_ref() {
+        FwObject::Process(p) => p.inspect_address_space()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if proof.observed_process_cr3 & !0xfff != mapped_info.address_space_root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address == 0
+        || code.virtual_address != CODE
+        || !code.ancestor_user_accessible
+        || !code.leaf_user_accessible
+        || code.leaf_writable
+        || code.leaf_non_executable
+        || !peer.lower_half_empty
+        || !peer.higher_half_matches_kernel
+        || peer.higher_half_user_accessible
+        || peer.root_frame != empty_info.address_space_root
+        || peer.root_frame == mapped_info.address_space_root
+        || process::live_count() != live_before + 2
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    drop(mapped_ref);
+    drop(peer_ref);
+    close(mapped)?;
+    close(empty_peer)?;
+    if process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 7 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M5-H process stack: kernel_before={:#x} process={:#x} kernel_after={:#x} code={CODE:#x} stack={STACK:#x} entry_rsp=0x500030002000 pushed_rsp=0x500030001ff8 ud2=0x50003000000d frames_returned=7\\n",
+        proof.original_kernel_cr3,
+        proof.observed_process_cr3 & !0xfff,
+        proof.restored_kernel_cr3,
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-H user stack self-test: passed code=rx_clean stack=rw_nx_dirty_allowed marker=direct_map_after_cr3_restored shared_ancestors=3 frames_returned=7 rsp0=shared if=masked scheduler=off callgate=off",
+    );
+    Ok(())
+}
