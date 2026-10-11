@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -275,6 +275,9 @@ jobs:
           grep -Fq "FreeWorldOS: M5-E process user-leaf self-test: passed inactive_mapping=ok user_leaf=1 ancestors=3 user_writable=ok leaf_nx=ok isolated_peer=ok rollback_rejected=ok frames_returned=6 cr3_switch=off user_execution=off callgate=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5f.process_cr3_roundtrip" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5g.process_ring3_cr3" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5h.process_user_stack" selftest-boot-serial.log
+          grep -Eq "FreeWorldOS: M5-H return gate: vector=0xf2 process_cr3=0x[0-9a-f]+ user_cs=0x23 user_ss=0x1b user_rip=0x50003000000d user_rsp=0x500030001ff8 rsp0=ok kernel_cr3=restored marker=ok" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-H user stack self-test: passed code=rx_clean stack=rw_nx_dirty_allowed marker=direct_map_after_cr3_restored shared_ancestors=3 frames_returned=7 rsp0=shared if=masked scheduler=off callgate=off" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M5-G return gate: vector=0xf2 process_cr3=0x[0-9a-f]+ user_cs=0x23 user_ss=0x1b user_rip=0x50003000000c user_rsp=0x500030000ff0 rsp0=ok kernel_cr3=restored marker=ok" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M5-G process ring3: kernel_before=0x[0-9a-f]+ process=0x[0-9a-f]+ kernel_after=0x[0-9a-f]+ code=0x500030000000 frame=0xffff[0-9a-f]+ cs=0x23 ss=0x1b vector=0xf2" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-G process ring3 self-test: passed process_cr3=active_in_cpl3 iretq=ok user_rx=ok user_stack_writes=off tss_rsp0=used kernel_cr3=restored_before_rust frame_reclaim=6 if=masked scheduler=off callgate=off" selftest-boot-serial.log
