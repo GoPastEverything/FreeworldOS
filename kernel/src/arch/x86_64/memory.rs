@@ -712,6 +712,9 @@ pub use process_leaf::ci_probe_inactive_user_leaf;
 #[cfg(feature = "m5f-ci-self-test")]
 pub use process_leaf::{ControlledCr3Proof, ci_controlled_cr3_roundtrip};
 
+#[cfg(feature = "m5h-ci-self-test")]
+pub use process_leaf::{map_adjacent_inactive_stack_leaf, ci_process_stack_push};
+
 const PML4_ENTRY_COUNT: usize = 512;
 const PML4_LOWER_HALF_ENTRIES: usize = 256;
 
