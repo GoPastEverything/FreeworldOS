@@ -69,14 +69,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M3 heap initialization failed: {error:?}");
     }
 
-    #[cfg(feature = "m5h-ci-self-test")]
-    {
-        debug::selftest::run_result(
-            "m5h.process_user_stack",
-            object::process_user_stack_ci_self_test,
-        );
-    }
-
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(
@@ -187,6 +179,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         debug::selftest::run_result(
             "m5g.process_ring3_cr3",
             object::process_ring3_cr3_ci_self_test,
+        );
+    }
+
+    #[cfg(feature = "m5h-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5h.process_user_stack",
+            object::process_user_stack_ci_self_test,
         );
     }
 
