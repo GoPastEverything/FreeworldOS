@@ -879,7 +879,7 @@ pub fn process_user_stack_ci_self_test() -> Result<(), ObjectError> {
         return Err(ObjectError::SelfTestFailed);
     }
     crate::arch::serial::write_fmt(format_args!(
-        "FreeWorldOS: M5-H process stack: kernel_before={:#x} process={:#x} kernel_after={:#x} code={CODE:#x} stack={STACK:#x} entry_rsp=0x500030002000 pushed_rsp=0x500030001ff8 ud2=0x50003000000d frames_returned=7\\n",
+        "FreeWorldOS: M5-H process stack: kernel_before={:#x} process={:#x} kernel_after={:#x} code={CODE:#x} stack={STACK:#x} entry_rsp=0x500030002000 pushed_rsp=0x500030001ff8 ud2=0x50003000000d frames_returned=7\n",
         proof.original_kernel_cr3,
         proof.observed_process_cr3 & !0xfff,
         proof.restored_kernel_cr3,
