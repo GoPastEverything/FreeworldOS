@@ -251,10 +251,27 @@ pub unsafe fn enter_once_push(root_phys: u64, user_rip: u64, user_rsp: u64) -> R
 pub unsafe fn enter_once_private_rsp0(
     root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64
 ) -> Ring3ProcessProof {
+    unsafe { enter_private_rsp0_from(root_phys, user_rip, user_rsp, bottom, top, super::ring0_privilege_stack_top()) }
+}
+
+#[cfg(feature = "m5l-ci-self-test")]
+pub unsafe fn enter_private_rsp0_as_b(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
+    a_rsp0: u64,
+) -> Ring3ProcessProof {
+    unsafe { enter_private_rsp0_from(root_phys, user_rip, user_rsp, bottom, top, a_rsp0) }
+}
+
+#[cfg(feature = "m5i-ci-self-test")]
+unsafe fn enter_private_rsp0_from(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
+    expected_prior_rsp0: u64,
+) -> Ring3ProcessProof {
     assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
     assert_eq!(top & 0xf, 0);
     assert!(bottom >= 0xffff_8000_0000_0000);
-    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert_eq!(gdt::read_rsp0(), expected_prior_rsp0);
+    assert_ne!(top, expected_prior_rsp0, "M5-L B cannot share A's stack top");
     PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
     PRIVATE_STACK_TOP.store(top, Ordering::Release);
     PRIVATE_STACK_MODE.store(true, Ordering::Release);
@@ -274,6 +291,23 @@ pub unsafe fn enter_once_private_rsp0(
 #[cfg(feature = "m5k-ci-self-test")]
 pub unsafe fn suspend_and_resume_once(
     root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64
+) -> Ring3ProcessProof {
+    unsafe { suspend_resume_with_hook(root_phys, user_rip, user_rsp, bottom, top, || {}) }
+}
+
+/// M5-L: the hook executes on the bootstrap kernel call stack after A's
+/// first full interrupt frame is saved, and before its original IRETQ.
+#[cfg(feature = "m5l-ci-self-test")]
+pub unsafe fn suspend_a_run_b_resume_a(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
+    run_b: impl FnOnce(),
+) -> Ring3ProcessProof {
+    unsafe { suspend_resume_with_hook(root_phys, user_rip, user_rsp, bottom, top, run_b) }
+}
+
+pub(crate) unsafe fn suspend_resume_with_hook(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
+    run_during_suspend: impl FnOnce(),
 ) -> Ring3ProcessProof {
     assert_eq!(user_rip, 0x0000_5000_3000_0000);
     assert_eq!(user_rsp, 0x0000_5000_3000_2000);
@@ -308,6 +342,37 @@ pub unsafe fn suspend_and_resume_once(
         assert_eq!(suspended.rflags & (1 << 9), 0);
         assert_eq!(suspended.cs & 3, 3);
         assert_eq!(suspended.ss & 3, 3);
+        // Preserve every byte of A's 160-byte saved context while another
+        // independent process B enters Ring 3 and returns.
+        let first_words: [u64; 20] = core::array::from_fn(|i| unsafe {
+            core::ptr::read_volatile((first.frame_address as *const u64).add(i))
+        });
+        #[cfg(feature = "m5l-ci-self-test")]
+        {
+            // B is not a continuation of A. Disarm A's test-only trap count
+            // while B uses the same 0xF2 IDT gate and shared instrumentation.
+            SUSPEND_MODE.store(false, Ordering::Release);
+            PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        }
+        run_during_suspend();
+        #[cfg(feature = "m5l-ci-self-test")]
+        {
+            PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+            PRIVATE_STACK_TOP.store(top, Ordering::Release);
+            PRIVATE_STACK_MODE.store(true, Ordering::Release);
+            SUSPEND_MODE.store(true, Ordering::Release);
+            EXPECTED_ROOT.store(root_phys, Ordering::Release);
+            EXPECTED_RSP.store(user_rsp - 8, Ordering::Release);
+            PUSH_MODE.store(true, Ordering::Release);
+            assert_eq!(TRAP_COUNT.load(Ordering::Acquire), 1);
+        }
+        for (i, original) in first_words.into_iter().enumerate() {
+            let current = unsafe {
+                core::ptr::read_volatile((first.frame_address as *const u64).add(i))
+            };
+            assert_eq!(current, original, "M5-L: B corrupted A's saved 160-byte context");
+        }
+        assert_eq!(gdt::read_rsp0(), top, "B did not restore A's private RSP0");
         EXPECTED_RIP.store(FINAL_RIP, Ordering::Release);
         RETURN_SEEN.store(false, Ordering::Release);
         assert!(!ARMED.swap(true, Ordering::AcqRel));

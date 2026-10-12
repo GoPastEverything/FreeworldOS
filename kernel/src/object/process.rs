@@ -79,6 +79,24 @@ impl ProcessObject {
         Ok(self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds())
     }
 
+    #[cfg(feature = "m5l-ci-self-test")]
+    pub fn ci_private_rsp0_as_b(&self, a_rsp0: u64)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let stack = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        let (bottom, top) = stack.bounds();
+        self.address_space.ci_private_rsp0_as_b(bottom, top, a_rsp0)
+    }
+
+    #[cfg(feature = "m5l-ci-self-test")]
+    pub fn ci_suspend_a_b_a(&self, run_b: impl FnOnce())
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let stack = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        let (bottom, top) = stack.bounds();
+        self.address_space.ci_suspend_a_b_a(bottom, top, run_b)
+    }
+
     #[cfg(feature = "m5k-ci-self-test")]
     pub fn ci_suspend_resume(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
         let stack = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?;
