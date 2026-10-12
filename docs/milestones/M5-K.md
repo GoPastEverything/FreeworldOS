@@ -26,9 +26,9 @@ ud2                       ;  2 bytes, offset 15 (must not execute)
 
 Code VA 0x500030000000 U+RX; stack VA 0x500030001000 U+RW,NX.
 Entry RSP = 0x500030002000; after the one push = 0x500030001ff8.
-The first saved RIP is **0x50003000000d** (second INT); second saved
+The stub is exactly **17 bytes**. The first saved RIP is **0x50003000000d** (second INT); second saved
 RIP is **0x50003000000f** (UD2). Verify the marker through the
-kernel direct map after restoring kernel CR3; verify that the user RSP
+kernel direct map after the **final** kernel CR3 restoration (one read only); verify that the user RSP
 is unchanged between the two returns and the marker was not pushed twice.
 
 ## Frame ownership
@@ -38,6 +38,13 @@ hardware frame intact on the private kernel stack when returning to
 the bootstrap kernel call stack. Its saved frame address and owner/root
 must survive until resumption. While suspended, kernel CR3 is active;
 process-owned PML4, both leaves and private stack remain live.
+
+The original first frame must occupy precisely **[top-160, top)**.
+Before resuming it, set TSS.RSP0 to **top-160**, while keeping the bootstrap
+RSP0 saved. The second trap then owns **[top-320, top-160)**.
+Assert both ranges are non-overlapping, wholly within A's private kernel
+stack, and disjoint from the bootstrap RSP0 stack. Neither trap may
+overwrite the original 160-byte frame before resumption.
 
 An IRETQ-resume trampoline must activate A's CR3, restore the saved GPRs
 and consume the **original** hardware IRETQ frame, without returning to
@@ -55,6 +62,7 @@ IDT vector 0xF2.
 
 - Saved first RIP 0x50003000000d, second RIP 0x50003000000f.
 - Both traps come from CPL3 with correct user CS/SS and observed process CR3.
+- First saved frame is exactly [top-160, top); second is [top-320, top-160); TSS.RSP0 is switched to top-160 before resume.
 - First saved frame belongs to A's private kernel stack and remains
   byte-for-byte valid until the resume trampoline consumes it.
 - A's second interrupt frame fits the same private kernel stack without
