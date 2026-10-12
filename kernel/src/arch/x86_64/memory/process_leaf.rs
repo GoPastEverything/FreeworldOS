@@ -488,6 +488,22 @@ impl InactiveUserLeaf {
 pub fn ci_process_suspend_resume(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64
 ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    ci_process_suspend_resume_impl(root, mapping, bottom, top, || {})
+}
+
+#[cfg(feature = "m5l-ci-self-test")]
+pub fn ci_process_suspend_a_b_a(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
+    run_b: impl FnOnce(),
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    ci_process_suspend_resume_impl(root, mapping, bottom, top, run_b)
+}
+
+#[cfg(feature = "m5k-ci-self-test")]
+fn ci_process_suspend_resume_impl(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
+    run_during_suspend: impl FnOnce(),
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
     const CODE: u64 = 0x0000_5000_3000_0000;
     const STACK: u64 = 0x0000_5000_3000_1000;
     let stack_frame = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
@@ -507,8 +523,8 @@ pub fn ci_process_suspend_resume(
         Ok(())
     })??;
     let proof = unsafe {
-        crate::arch::process_ring3::suspend_and_resume_once(
-            root.start, CODE, STACK + PAGE_SIZE, bottom, top,
+        crate::arch::process_ring3::suspend_resume_with_hook(
+            root.start, CODE, STACK + PAGE_SIZE, bottom, top, run_during_suspend,
         )
     };
     // One and only one marker read, AFTER the final kernel CR3 restore.
