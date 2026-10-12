@@ -265,6 +265,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::test_hello_from_freeworld_ci_self_test,
         );
     }
+    #[cfg(feature = "m5s-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5s.unmapped_then_hello",
+            object::test_unmapped_then_hello_ci_self_test,
+        );
+    }
 
     #[cfg(feature = "m3-ci-self-test")]
     {
