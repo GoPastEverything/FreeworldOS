@@ -1485,6 +1485,16 @@ pub fn test_freeworld_elf_ci_self_test() -> Result<(), ObjectError> {
     process.map_adjacent_user_stack()?;
     let handle = handle::insert(Arc::new(FwObject::Process(process)), Rights::READ)?;
     let strong = handle::get(handle, Rights::READ)?;
+    // Negative ABI case must go through the same process loader interface,
+    // and must be rejected before staging code or entering Ring 3.
+    match strong.as_ref() {
+        FwObject::Process(p) => {
+            if p.ci_load_freeworld_elf(&bad).is_ok() {
+                return Err(ObjectError::SelfTestFailed);
+            }
+        },
+        _ => return Err(ObjectError::WrongObjectType),
+    }
     let proof = match strong.as_ref() {
         FwObject::Process(p) => p.ci_load_freeworld_elf(&valid)?,
         _ => return Err(ObjectError::WrongObjectType),
