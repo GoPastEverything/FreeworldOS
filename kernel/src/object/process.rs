@@ -79,6 +79,16 @@ impl ProcessObject {
         Ok(self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds())
     }
 
+    #[cfg(feature = "m5m-ci-self-test")]
+    pub fn ci_stage_explicit_queue(&self, is_a: bool) -> Result<(), MemoryError> {
+        self.address_space.ci_stage_explicit_queue(is_a)
+    }
+
+    #[cfg(feature = "m5m-ci-self-test")]
+    pub fn ci_check_explicit_queue_marker(&self) -> Result<(), MemoryError> {
+        self.address_space.ci_check_explicit_queue_marker()
+    }
+
     #[cfg(feature = "m5l-ci-self-test")]
     pub fn ci_private_rsp0_as_b(&self, a_rsp0: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
