@@ -1377,3 +1377,44 @@ pub fn test_kernel_owned_callgate_ci_self_test() -> Result<(), ObjectError> {
     );
     Ok(())
 }
+
+#[cfg(feature = "m5o-ci-self-test")]
+pub fn test_syscall_sysret_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld, image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64, architecture: Architecture::X86_64,
+    };
+    let bootstrap = crate::arch::current_tss_rsp0();
+    let before = crate::memory::frame_reuse_stats()?;
+    let live_before = process::live_count();
+    let mut process = ProcessObject::new_with_private_kernel_stack(profile)?;
+    process.map_one_user_leaf(0x0000_5000_3000_0000, PagePermissions::user_read_execute())?;
+    process.map_adjacent_user_stack()?;
+    let handle = handle::insert(Arc::new(FwObject::Process(process)), Rights::READ)?;
+    let strong = handle::get(handle, Rights::READ)?;
+    let proof = match strong.as_ref() {
+        FwObject::Process(p) => p.ci_syscall_sysret()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.original_kernel_cr3 == proof.observed_process_cr3
+        || crate::arch::current_tss_rsp0() != bootstrap
+        || process::live_count() != live_before + 1 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    drop(strong);
+    close(handle)?;
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 10
+        || process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-O SYSCALL/SYSRET self-test: passed msrs=STAR,LSTAR,SFMASK syscall=real sysret=real continuation=0x50003000000c final_test_trap=0x50003000000e user_rsp=0x500030002000 bootstrap_rsp0=restored frames_returned=10 if=masked scheduler=off timer_choice=off",
+    );
+    Ok(())
+}
