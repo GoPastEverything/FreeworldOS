@@ -41,6 +41,7 @@ m5g-ci-self-test = ["m5f-ci-self-test"]
 m5h-ci-self-test = ["m5g-ci-self-test"]
 m5i-ci-self-test = ["m5h-ci-self-test"]
 m5j-ci-self-test = ["m5i-ci-self-test"]
+m5k-ci-self-test = ["m5j-ci-self-test"]
 
 [dependencies]
 bootloader_api = "=0.11.17"
