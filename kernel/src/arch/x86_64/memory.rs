@@ -716,6 +716,8 @@ pub use process_leaf::{ControlledCr3Proof, ci_controlled_cr3_roundtrip};
 pub use process_leaf::{map_adjacent_inactive_stack_leaf, ci_process_stack_push};
 #[cfg(feature = "m5i-ci-self-test")]
 pub use process_leaf::ci_process_stack_push_private;
+#[cfg(feature = "m5k-ci-self-test")]
+pub use process_leaf::ci_process_suspend_resume;
 
 const PML4_ENTRY_COUNT: usize = 512;
 const PML4_LOWER_HALF_ENTRIES: usize = 256;
