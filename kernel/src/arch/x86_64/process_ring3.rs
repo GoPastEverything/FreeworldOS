@@ -93,6 +93,24 @@ const _: () = assert!(FRAME_SIZE == 160);
 static ARMED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5o-ci-self-test")]
 static M5O_MODE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m5p-ci-self-test")]
+static M5P_MODE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m5p-ci-self-test")]
+pub const M5P_NUMBER: u64 = 1;
+#[cfg(feature = "m5p-ci-self-test")]
+pub const M5P_ARGUMENT: u64 = 41;
+#[cfg(feature = "m5p-ci-self-test")]
+pub const M5P_RESULT: u64 = 42;
+#[cfg(feature = "m5p-ci-self-test")]
+pub const M5P_STUB: [u8; 26] = [
+    0x48, 0xc7, 0xc0, 1, 0, 0, 0,         // mov rax, 1
+    0x48, 0xc7, 0xc7, 41, 0, 0, 0,        // mov rdi, 41
+    0x0f, 0x05,                           // syscall
+    0x48, 0x83, 0xf8, 42,                 // cmp rax, 42
+    0x75, 0x02,                           // jne ud2
+    0xcd, 0xf2,                           // separate final test exit
+    0x0f, 0x0b,                           // ud2, unreachable
+];
 static PUSH_MODE: AtomicBool = AtomicBool::new(false);
 static RETURN_SEEN: AtomicBool = AtomicBool::new(false);
 static EXPECTED_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -245,6 +263,10 @@ __freeworld_m5o_return_rcx: .quad 0
 __freeworld_m5o_return_r11: .quad 0
 __freeworld_m5o_observed_cr3: .quad 0
 __freeworld_m5o_observed_rax: .quad 0
+__freeworld_m5p_dispatch_mode: .quad 0
+__freeworld_m5p_number: .quad 0
+__freeworld_m5p_argument: .quad 0
+__freeworld_m5p_result: .quad 0
 
     .section .text
     .global __freeworld_m5o_syscall_entry
@@ -260,6 +282,19 @@ __freeworld_m5o_syscall_entry:
     mov qword ptr [rip + __freeworld_m5o_observed_cr3], rax
     mov qword ptr [rip + __freeworld_m5o_seen], 1
     mov rax, qword ptr [rip + __freeworld_m5o_observed_rax]
+    cmp qword ptr [rip + __freeworld_m5p_dispatch_mode], 0
+    je .Lm5p_dispatch_done
+    mov qword ptr [rip + __freeworld_m5p_number], rax
+    mov qword ptr [rip + __freeworld_m5p_argument], rdi
+    cmp rax, 1
+    jne .Lm5p_unsupported
+    lea rax, [rdi + 1]
+    jmp .Lm5p_record_result
+.Lm5p_unsupported:
+    mov rax, -38
+.Lm5p_record_result:
+    mov qword ptr [rip + __freeworld_m5p_result], rax
+.Lm5p_dispatch_done:
     mov rcx, qword ptr [rip + __freeworld_m5o_return_rcx]
     mov r11, qword ptr [rip + __freeworld_m5o_return_r11]
     mov rsp, qword ptr [rip + __freeworld_m5o_user_rsp]
@@ -276,6 +311,10 @@ unsafe extern "C" {
     static __freeworld_m5o_return_rcx: u64;
     static __freeworld_m5o_observed_cr3: u64;
     static __freeworld_m5o_observed_rax: u64;
+    static __freeworld_m5p_dispatch_mode: u64;
+    static __freeworld_m5p_number: u64;
+    static __freeworld_m5p_argument: u64;
+    static __freeworld_m5p_result: u64;
 }
 
 #[cfg(feature = "m5o-ci-self-test")]
@@ -288,38 +327,68 @@ fn m5o_write(address: *mut u64, value: u64) {
     unsafe { core::ptr::write_volatile(address, value) }
 }
 
-/// Test-only MSR setup, one CPU. No syscall ABI or scheduler dispatch.
+/// MSR restoration is mandatory for M5-P. M5-O also uses this guard,
+/// so the preceding regression test no longer leaves CPU-local state behind.
+#[cfg(feature = "m5o-ci-self-test")]
+#[derive(Clone, Copy)]
+struct SyscallMsrs { efer: u64, star: u64, lstar: u64, sfmask: u64 }
+
+#[cfg(feature = "m5o-ci-self-test")]
+unsafe fn read_msr(msr: u32) -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe { core::arch::asm!("rdmsr", in("ecx") msr,
+        out("eax") lo, out("edx") hi, options(nostack, preserves_flags)); }
+    ((hi as u64) << 32) | lo as u64
+}
+
+#[cfg(feature = "m5o-ci-self-test")]
+unsafe fn write_msr(msr: u32, value: u64) {
+    unsafe { core::arch::asm!("wrmsr", in("ecx") msr,
+        in("eax") value as u32, in("edx") (value >> 32) as u32,
+        options(nostack, preserves_flags)); }
+}
+
+#[cfg(feature = "m5o-ci-self-test")]
+unsafe fn snapshot_syscall_msrs() -> SyscallMsrs {
+    unsafe { SyscallMsrs {
+        efer: read_msr(0xc000_0080),
+        star: read_msr(0xc000_0081),
+        lstar: read_msr(0xc000_0082),
+        sfmask: read_msr(0xc000_0084),
+    } }
+}
+
+#[cfg(feature = "m5o-ci-self-test")]
+unsafe fn restore_syscall_msrs(snapshot: SyscallMsrs) {
+    unsafe {
+        // Restore LSTAR/STAR/mask first, EFER.SCE last, all under IF=0.
+        write_msr(0xc000_0082, snapshot.lstar);
+        write_msr(0xc000_0081, snapshot.star);
+        write_msr(0xc000_0084, snapshot.sfmask);
+        write_msr(0xc000_0080, snapshot.efer);
+        let check = snapshot_syscall_msrs();
+        assert_eq!(check.efer, snapshot.efer);
+        assert_eq!(check.star, snapshot.star);
+        assert_eq!(check.lstar, snapshot.lstar);
+        assert_eq!(check.sfmask, snapshot.sfmask);
+    }
+}
+
 #[cfg(feature = "m5o-ci-self-test")]
 unsafe fn configure_m5o_syscall() {
-
-    const STAR: u32 = 0xc000_0081;
-    const LSTAR: u32 = 0xc000_0082;
-    const SFMASK: u32 = 0xc000_0084;
-    unsafe fn wrmsr(msr: u32, value: u64) {
-        unsafe {
-            core::arch::asm!("wrmsr", in("ecx") msr,
-                in("eax") value as u32, in("edx") (value >> 32) as u32,
-                options(nostack, preserves_flags));
-        }
-    }
-    // Long-mode SYSRET derives ring-3 CS = STAR[63:48] + 16, SS = +8.
     let kcs = u64::from(CS::get_reg().0);
-    assert_eq!(kcs & 3, 0);
     let ucs = u64::from(super::user_code_selector().0);
     let uds = u64::from(super::user_data_selector().0);
-    assert_eq!(ucs, (uds + 8));
+    assert_eq!(kcs & 3, 0);
+    assert_eq!(ucs, uds + 8);
     let base = ucs - 16;
     let star = (base << 48) | (kcs << 32);
     unsafe {
-        wrmsr(STAR, star);
-        wrmsr(LSTAR, __freeworld_m5o_syscall_entry as usize as u64);
-        // Mask IF, DF and TF on syscall entry. We only support IF=0 here.
-        wrmsr(SFMASK, (1 << 9) | (1 << 10) | (1 << 8));
-        let mut low: u32;
-        let mut high: u32;
-        core::arch::asm!("rdmsr", in("ecx") 0xc000_0080_u32,
-            out("eax") low, out("edx") high, options(nostack, preserves_flags));
-        wrmsr(0xc000_0080, (((high as u64) << 32) | low as u64) | 1);
+        write_msr(0xc000_0081, star);
+        write_msr(0xc000_0082, __freeworld_m5o_syscall_entry as usize as u64);
+        write_msr(0xc000_0084, (1 << 9) | (1 << 10) | (1 << 8));
+        write_msr(0xc000_0080, read_msr(0xc000_0080) | 1);
     }
 }
 
@@ -333,6 +402,7 @@ pub unsafe fn ci_syscall_sysret(root: u64, bottom: u64, top: u64) -> Ring3Proces
     assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
     x86_64::instructions::interrupts::without_interrupts(|| {
         assert!(!super::interrupts_enabled());
+        let saved_msrs = unsafe { snapshot_syscall_msrs() };
         unsafe { configure_m5o_syscall(); }
         m5o_write(core::ptr::addr_of!(__freeworld_m5o_kernel_top) as *mut u64, top);
         m5o_write(core::ptr::addr_of!(__freeworld_m5o_seen) as *mut u64, 0);
@@ -354,6 +424,7 @@ pub unsafe fn ci_syscall_sysret(root: u64, bottom: u64, top: u64) -> Ring3Proces
         unsafe { gdt::write_rsp0(previous_rsp0); }
         PRIVATE_STACK_MODE.store(false, Ordering::Release);
         assert_eq!(gdt::read_rsp0(), previous_rsp0);
+        unsafe { restore_syscall_msrs(saved_msrs); }
         serial::write_fmt(format_args!(
             "FreeWorldOS: M5-O syscall/sysret: root={root:#x} syscall_rip={:#x} final_rip={:#x} user_rsp={USER_TOP:#x} frame={:#x} bootstrap_rsp0=restored\\n",
             CODE + 12, CODE + 14, proof.frame_address,
@@ -787,12 +858,64 @@ pub unsafe fn ci_callgate_roundtrip(root: u64, bottom: u64, top: u64) -> Ring3Pr
     })
 }
 
+#[cfg(feature = "m5o-ci-self-test")]
+fn M5P_MODE_ACTIVE() -> bool {
+    #[cfg(feature = "m5p-ci-self-test")]
+    { M5P_MODE.load(Ordering::Acquire) }
+    #[cfg(not(feature = "m5p-ci-self-test"))]
+    { false }
+}
+
+#[cfg(feature = "m5p-ci-self-test")]
+pub unsafe fn ci_one_number_syscall(root: u64, bottom: u64, top: u64) -> Ring3ProcessProof {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const USER_RSP: u64 = 0x0000_5000_3000_2000;
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let msrs = unsafe { snapshot_syscall_msrs() };
+        unsafe { configure_m5o_syscall(); }
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_kernel_top) as *mut u64, top);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_seen) as *mut u64, 0);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_dispatch_mode) as *mut u64, 1);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_result) as *mut u64, 0);
+        let bootstrap = gdt::read_rsp0();
+        unsafe { gdt::write_rsp0(top); }
+        PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+        PRIVATE_STACK_TOP.store(top, Ordering::Release);
+        PRIVATE_STACK_MODE.store(true, Ordering::Release);
+        M5P_MODE.store(true, Ordering::Release);
+        let proof = unsafe { enter_mode(root, CODE, USER_RSP, false) };
+        M5P_MODE.store(false, Ordering::Release);
+        assert_eq!(proof.frame_address, top - FRAME_SIZE as u64);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)), 1);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_user_rsp)), USER_RSP);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 16);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_number)), M5P_NUMBER);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_argument)), M5P_ARGUMENT);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_result)), M5P_RESULT);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_observed_cr3)) & !0xfff, root);
+        assert_eq!(gdt::read_rsp0(), top);
+        unsafe { gdt::write_rsp0(bootstrap); }
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_dispatch_mode) as *mut u64, 0);
+        unsafe { restore_syscall_msrs(msrs); }
+        assert_eq!(gdt::read_rsp0(), bootstrap);
+        assert!(!super::interrupts_enabled());
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-P syscall: number={M5P_NUMBER} argument={M5P_ARGUMENT} result={M5P_RESULT} continuation={:#x} final_rip={:#x} user_rsp={USER_RSP:#x} msrs=restored rsp0=restored\\n",
+            CODE + 16, CODE + 24,
+        ));
+        proof
+    })
+}
+
 unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bool) -> Ring3ProcessProof {
     assert!(!super::in_interrupt(), "M5-G called from interrupt handler");
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
     EXPECTED_RIP.store(user_rip + if push_mode { PUSH_RETURN_RIP_OFFSET } else {
         #[cfg(feature = "m5o-ci-self-test")]
-        { if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
+        { if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
         #[cfg(not(feature = "m5o-ci-self-test"))]
         { RETURN_RIP_OFFSET }
     }, Ordering::Release);
@@ -886,6 +1009,13 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     assert_eq!(frame.rflags & (1 << 9), 0);
     assert_eq!(frame.rip, EXPECTED_RIP.load(Ordering::Acquire));
     assert_eq!(frame.rsp, EXPECTED_RSP.load(Ordering::Acquire));
+    #[cfg(feature = "m5p-ci-self-test")]
+    if M5P_MODE.load(Ordering::Acquire) {
+        assert_eq!(frame.rax, M5P_RESULT);
+    } else {
+        assert_eq!(frame.rax, USER_MARKER);
+    }
+    #[cfg(not(feature = "m5p-ci-self-test"))]
     assert_eq!(frame.rax, USER_MARKER);
     assert_eq!(CS::get_reg().0 & 3, 0);
 
