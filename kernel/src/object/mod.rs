@@ -4,6 +4,8 @@ pub mod counter;
 pub mod handle;
 pub mod module;
 pub mod process;
+#[cfg(feature = "m5m-ci-self-test")]
+pub(crate) mod explicit_queue;
 pub mod task;
 
 use counter::CounterObject;
@@ -1243,6 +1245,93 @@ pub fn suspend_a_run_b_resume_a_ci_self_test() -> Result<(), ObjectError> {
     ));
     crate::arch::serial::println(
         "FreeWorldOS: M5-L A-B-A isolation self-test: passed a_frame=unchanged_after_b a_resume_rip=0x50003000000d b_frame=private_only cr3=distinct marker=once rsp0=restored_after_final frames_returned=20 if=masked scheduler=off callgate=off",
+    );
+    Ok(())
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+pub fn explicit_two_slot_queue_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld, image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64, architecture: Architecture::X86_64,
+    };
+    explicit_queue::ci_self_test().map_err(|_| ObjectError::SelfTestFailed)?;
+    let bootstrap_rsp0 = crate::arch::current_tss_rsp0();
+    let before = crate::memory::frame_reuse_stats()?;
+    let live_before = process::live_count();
+    if bootstrap_rsp0 != crate::arch::ring0_privilege_stack_top() {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let mut a = ProcessObject::new_with_private_kernel_stack(profile)?;
+    a.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    a.map_adjacent_user_stack()?;
+    let mut b = ProcessObject::new_with_private_kernel_stack(profile)?;
+    b.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    b.map_adjacent_user_stack()?;
+    let handle_a = handle::insert(Arc::new(FwObject::Process(a)), Rights::READ)?;
+    let handle_b = handle::insert(Arc::new(FwObject::Process(b)), Rights::READ)?;
+    let ref_a = handle::get(handle_a, Rights::READ)?;
+    let ref_b = handle::get(handle_b, Rights::READ)?;
+    let (root_a, bounds_a, code_a) = match ref_a.as_ref() {
+        FwObject::Process(p) => {
+            p.ci_stage_explicit_queue(true)?;
+            (p.info().address_space_root.start, p.ci_private_stack_bounds()?,
+                p.inspect_user_leaf()?)
+        },
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let (root_b, bounds_b, code_b) = match ref_b.as_ref() {
+        FwObject::Process(p) => {
+            p.ci_stage_explicit_queue(false)?;
+            (p.info().address_space_root.start, p.ci_private_stack_bounds()?,
+                p.inspect_user_leaf()?)
+        },
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if root_a == root_b || code_a.data_frame == code_b.data_frame
+        || bounds_a.0 < bounds_b.1 && bounds_b.0 < bounds_a.1
+        || bounds_a.1 - bounds_a.0 != 4 * 4096
+        || bounds_b.1 - bounds_b.0 != 4 * 4096
+        || process::live_count() != live_before + 2 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    let proof = unsafe { crate::arch::process_ring3::run_explicit_two_slot_queue(
+        root_a, bounds_a.0, bounds_a.1, root_b, bounds_b.0, bounds_b.1,
+    ) };
+    if proof.root_a != root_a || proof.root_b != root_b
+        || proof.frame_a_first != bounds_a.1 - 160
+        || proof.frame_a_second != bounds_a.1 - 320
+        || proof.frame_a_final != bounds_a.1 - 480
+        || proof.frame_b_first != bounds_b.1 - 160
+        || proof.frame_b_second != bounds_b.1 - 320
+        || crate::arch::current_tss_rsp0() != bootstrap_rsp0 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    // Read each pushed marker once, after both CR3 resumes finished.
+    match ref_a.as_ref() {
+        FwObject::Process(p) => p.ci_check_explicit_queue_marker()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    }
+    match ref_b.as_ref() {
+        FwObject::Process(p) => p.ci_check_explicit_queue_marker()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    }
+    drop(ref_a); drop(ref_b);
+    close(handle_a)?; close(handle_b)?;
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 20
+        || process::live_count() != live_before
+        || crate::arch::current_tss_rsp0() != bootstrap_rsp0 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-M two-slot explicit queue: passed picks=A,B,A a_frames=three_private b_frames=two_private distinct_cr3=ok markers=once bootstrap_rsp0=restored_at_end frames_returned=20 if=masked timer_choice=off callgate=off",
     );
     Ok(())
 }

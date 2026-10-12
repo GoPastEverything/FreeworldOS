@@ -58,6 +58,18 @@ impl ProcessAddressSpace {
         crate::arch::memory::ci_process_stack_push(self.root_frame, leaf)
     }
 
+    #[cfg(feature = "m5m-ci-self-test")]
+    pub fn ci_stage_explicit_queue(&self, is_a: bool) -> Result<(), MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_stage_explicit_queue(self.root_frame, leaf, is_a)
+    }
+
+    #[cfg(feature = "m5m-ci-self-test")]
+    pub fn ci_check_explicit_queue_marker(&self) -> Result<(), MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_check_explicit_queue_marker(self.root_frame, leaf)
+    }
+
     #[cfg(feature = "m5l-ci-self-test")]
     pub fn ci_private_rsp0_as_b(&self, bottom: u64, top: u64, a_rsp0: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
