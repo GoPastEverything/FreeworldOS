@@ -963,3 +963,128 @@ pub fn process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
     );
     Ok(())
 }
+
+#[cfg(feature = "m5j-ci-self-test")]
+pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const FRAME_BYTES: u64 = 160;
+
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+    let live_before = process::live_count();
+    let before = crate::memory::frame_reuse_stats()?;
+    let bootstrap_rsp0 = crate::arch::current_tss_rsp0();
+    if bootstrap_rsp0 != crate::arch::ring0_privilege_stack_top() {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    // Two distinct ProcessObjects; no user TaskObjects or runnable queue.
+    // Map each private kernel stack BEFORE creating its PML4.
+    let mut a = ProcessObject::new_with_private_kernel_stack(profile)?;
+    a.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    a.map_adjacent_user_stack()?;
+    let mut b = ProcessObject::new_with_private_kernel_stack(profile)?;
+    b.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    b.map_adjacent_user_stack()?;
+    let handle_a = handle::insert(Arc::new(FwObject::Process(a)), Rights::READ)?;
+    let handle_b = handle::insert(Arc::new(FwObject::Process(b)), Rights::READ)?;
+    let ref_a = handle::get(handle_a, Rights::READ)?;
+    let ref_b = handle::get(handle_b, Rights::READ)?;
+
+    let (root_a, bounds_a, leaf_a) = match ref_a.as_ref() {
+        FwObject::Process(p) => (
+            p.info().address_space_root,
+            p.ci_private_stack_bounds()?,
+            p.inspect_user_leaf()?,
+        ),
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    let (root_b, bounds_b, leaf_b) = match ref_b.as_ref() {
+        FwObject::Process(p) => (
+            p.info().address_space_root,
+            p.ci_private_stack_bounds()?,
+            p.inspect_user_leaf()?,
+        ),
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+
+    if root_a == root_b
+        || leaf_a.data_frame == leaf_b.data_frame
+        || bounds_a.0 >= bounds_a.1
+        || bounds_b.0 >= bounds_b.1
+        || bounds_a.0 < bounds_b.1 && bounds_b.0 < bounds_a.1
+        || leaf_a.virtual_address != CODE || leaf_b.virtual_address != CODE
+        || !leaf_a.leaf_user_accessible || !leaf_b.leaf_user_accessible
+        || leaf_a.leaf_writable || leaf_b.leaf_writable
+        || leaf_a.leaf_non_executable || leaf_b.leaf_non_executable
+        || process::live_count() != live_before + 2
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    // A: one masked 0xF2 entry, CR3 restored before Rust, then RSP0 restored.
+    let proof_a = match ref_a.as_ref() {
+        FwObject::Process(p) => p.ci_private_rsp0()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if crate::arch::current_tss_rsp0() != bootstrap_rsp0
+        || proof_a.observed_process_cr3 & !0xfff != root_a.start
+        || proof_a.original_kernel_cr3 != proof_a.restored_kernel_cr3
+        || proof_a.frame_address < bounds_a.0
+        || proof_a.frame_address.checked_add(FRAME_BYTES).is_none_or(|end| end > bounds_a.1)
+        || proof_a.frame_address >= bounds_b.0 && proof_a.frame_address < bounds_b.1
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    // B: explicitly sequential, after A has completely returned.
+    let proof_b = match ref_b.as_ref() {
+        FwObject::Process(p) => p.ci_private_rsp0()?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if crate::arch::current_tss_rsp0() != bootstrap_rsp0
+        || proof_b.observed_process_cr3 & !0xfff != root_b.start
+        || proof_b.original_kernel_cr3 != proof_b.restored_kernel_cr3
+        || proof_b.original_kernel_cr3 != proof_a.original_kernel_cr3
+        || proof_b.frame_address < bounds_b.0
+        || proof_b.frame_address.checked_add(FRAME_BYTES).is_none_or(|end| end > bounds_b.1)
+        || proof_b.frame_address >= bounds_a.0 && proof_b.frame_address < bounds_a.1
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    // Keep strong references alive until both proof intervals have ended.
+    drop(ref_a);
+    drop(ref_b);
+    close(handle_a)?;
+    close(handle_b)?;
+    if process::live_count() != live_before
+        || crate::arch::current_tss_rsp0() != bootstrap_rsp0
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let after = crate::memory::frame_reuse_stats()?;
+    // Per process: four private kernel-stack leaves + root + two user
+    // leaves + three user page-table ancestors = ten frames.
+    if after.returned_total.saturating_sub(before.returned_total) != 20 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+
+    crate::arch::serial::write_fmt(format_args!(
+        "FreeWorldOS: M5-J sequential process entry: root_a={:#x} root_b={:#x} frame_a={:#x} frame_b={:#x} stack_a=[{:#x}..{:#x}) stack_b=[{:#x}..{:#x}) bootstrap_rsp0={bootstrap_rsp0:#x} restored_each=ok frames_returned=20\n",
+        root_a.start, root_b.start, proof_a.frame_address, proof_b.frame_address,
+        bounds_a.0, bounds_a.1, bounds_b.0, bounds_b.1
+    ));
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-J two-process private RSP0 self-test: passed distinct_cr3=ok distinct_kernel_stacks=ok frame_a=private_160 frame_b=private_160 bootstrap_rsp0=restored_after_each sequential=ok frames_returned=20 if=masked timer_switch=off scheduler=off callgate=off",
+    );
+    Ok(())
+}

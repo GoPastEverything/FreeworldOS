@@ -53,6 +53,11 @@ pub fn user_data_selector() -> x86_64::structures::gdt::SegmentSelector {
     gdt::user_data_selector()
 }
 
+#[cfg(feature = "m5j-ci-self-test")]
+pub fn current_tss_rsp0() -> u64 {
+    gdt::read_rsp0()
+}
+
 pub fn ring0_privilege_stack_top() -> u64 {
     gdt::ring0_privilege_stack_top().as_u64()
 }

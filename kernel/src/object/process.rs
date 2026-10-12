@@ -74,6 +74,11 @@ impl ProcessObject {
         Ok(process)
     }
 
+    #[cfg(feature = "m5j-ci-self-test")]
+    pub fn ci_private_stack_bounds(&self) -> Result<(u64, u64), MemoryError> {
+        Ok(self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds())
+    }
+
     #[cfg(feature = "m5i-ci-self-test")]
     pub fn ci_private_rsp0(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
         let stack = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?;
