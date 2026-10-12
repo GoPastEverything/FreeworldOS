@@ -244,6 +244,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::test_syscall_sysret_ci_self_test,
         );
     }
+    #[cfg(feature = "m5p-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5p.one_number_syscall",
+            object::test_one_number_syscall_ci_self_test,
+        );
+    }
 
     #[cfg(feature = "m3-ci-self-test")]
     {
