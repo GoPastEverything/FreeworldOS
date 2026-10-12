@@ -732,6 +732,8 @@ pub use process_leaf::ci_one_number_syscall_proof;
 pub use process_leaf::ci_load_freeworld_elf_proof;
 #[cfg(feature = "m5r-ci-self-test")]
 pub use process_leaf::ci_hello_elf_proof;
+#[cfg(feature = "m5s-ci-self-test")]
+pub use process_leaf::ci_unmapped_then_hello_proof;
 #[cfg(feature = "m5l-ci-self-test")]
 pub use process_leaf::ci_process_stack_push_as_b;
 

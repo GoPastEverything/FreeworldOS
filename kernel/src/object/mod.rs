@@ -1575,3 +1575,61 @@ pub fn test_hello_from_freeworld_ci_self_test() -> Result<(), ObjectError> {
     );
     Ok(())
 }
+
+#[cfg(feature = "m5s-ci-self-test")]
+pub fn test_unmapped_then_hello_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld, image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64, architecture: Architecture::X86_64,
+    };
+    crate::exec::freeworld_elf::ci_parser_test()
+        .map_err(|_| ObjectError::SelfTestFailed)?;
+    let valid = crate::exec::freeworld_elf::invalid_then_hello_image();
+    let bad = crate::exec::freeworld_elf::test_image(2);
+    if crate::exec::freeworld_elf::validate(&bad).err()
+        != Some(crate::exec::freeworld_elf::Error::BadAbiVersion)
+    { return Err(ObjectError::SelfTestFailed); }
+    let bootstrap = crate::arch::current_tss_rsp0();
+    let before = crate::memory::frame_reuse_stats()?;
+    let live_before = process::live_count();
+    let mut process = ProcessObject::new_with_private_kernel_stack(profile)?;
+    process.map_one_user_leaf(0x0000_5000_3000_0000, PagePermissions::user_read_execute())?;
+    process.map_adjacent_user_stack()?;
+    let handle = handle::insert(Arc::new(FwObject::Process(process)), Rights::READ)?;
+    let strong = handle::get(handle, Rights::READ)?;
+    // Negative ABI case must go through the same process loader interface,
+    // and must be rejected before staging code or entering Ring 3.
+    match strong.as_ref() {
+        FwObject::Process(p) => {
+            if p.ci_unmapped_then_hello(&bad).is_ok() {
+                return Err(ObjectError::SelfTestFailed);
+            }
+        },
+        _ => return Err(ObjectError::WrongObjectType),
+    }
+    let proof = match strong.as_ref() {
+        FwObject::Process(p) => p.ci_unmapped_then_hello(&valid)?,
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.original_kernel_cr3 == proof.observed_process_cr3
+        || crate::arch::current_tss_rsp0() != bootstrap
+        || process::live_count() != live_before + 1 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    drop(strong);
+    close(handle)?;
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 10
+        || process::live_count() != live_before {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-S unmapped pointer: passed bad_ptr=0x500030003000 error=-14 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off",
+    );
+    Ok(())
+}
