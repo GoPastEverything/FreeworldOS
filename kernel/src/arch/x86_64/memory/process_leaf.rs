@@ -484,7 +484,6 @@ impl InactiveUserLeaf {
     }
 }
 
-#[cfg(feature = "m5h-ci-self-test")]
 #[cfg(feature = "m5k-ci-self-test")]
 pub fn ci_process_suspend_resume(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64
@@ -533,6 +532,7 @@ pub fn ci_process_suspend_resume(
     Ok(proof)
 }
 
+#[cfg(feature = "m5h-ci-self-test")]
 pub fn ci_process_stack_push(
     root: PhysFrame,
     mapping: &InactiveUserLeaf,
