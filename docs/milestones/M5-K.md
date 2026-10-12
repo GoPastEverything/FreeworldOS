@@ -1,6 +1,10 @@
 # M5-K — one-process suspended frame and IRETQ resume
 
-Status: design/implementation checklist only; **no M5-K execution proof yet**.
+Status: **implemented and QEMU-verified**. PR #35 merged into main at
+`4cf6eeceb6948d7123448c096a51c1409acea998`.
+Exact implementation head: `25aefb5351399b76b52c29d67992ccbfd0f0f82d`.
+GitHub Actions CI run: `38195219257` — completed successfully.
+QEMU serial: `SELFTEST PASS name=m5k.process_suspend_resume`.
 Base: `095598b68cb57972df04b5bd28852831fef69fcc` (merged M5-J).
 
 ## Goal
@@ -75,3 +79,14 @@ IDT vector 0xF2.
 - CI exact-head QEMU evidence, independent review, then merge.
 
 No claim of userspace task scheduling or a general process-resume API.
+
+## Accepted QEMU observations (run 38195219257)
+
+- Private kernel stack top: `0xffffa00000014000`.
+- First 160-byte frame: `0xffffa00000013f60` = top−160.
+- Second 160-byte frame: `0xffffa00000013ec0` = top−320.
+- Saved first RIP / resume destination: `0x50003000000d`.
+- Saved final RIP: `0x50003000000f`.
+- Kernel CR3 restored before Rust; bootstrap RSP0 restored only after second return.
+- User marker checked once via direct map after final CR3 restoration.
+- Ten frames reclaimed; no timer-driven scheduling or callgate.
