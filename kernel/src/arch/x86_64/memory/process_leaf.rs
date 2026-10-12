@@ -211,6 +211,34 @@ pub fn map_test_callgate(root: PhysFrame, mapping: &mut InactiveUserLeaf) -> Res
     })?
 }
 
+#[cfg(feature = "m5q-ci-self-test")]
+pub fn ci_load_freeworld_elf_proof(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
+    bytes: &[u8],
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    let elf = crate::exec::freeworld_elf::validate(bytes)
+        .map_err(|_| MemoryError::InvalidProcessUserPermissions)?;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none()
+        || elf.entry != CODE { return Err(MemoryError::InvalidProcessUserPermissions); }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+            core::ptr::copy_nonoverlapping(elf.code.as_ptr(), ptr, elf.code.len());
+        }
+        Ok(())
+    })??;
+    let proof = unsafe { crate::arch::process_ring3::ci_one_number_syscall(root.start, bottom, top) };
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address != top - 160
+    { return Err(MemoryError::ProcessUserLeafCorrupt); }
+    with_manager(|manager| { verify_chain(manager, root, mapping) })??;
+    Ok(proof)
+}
+
 #[cfg(feature = "m5p-ci-self-test")]
 pub fn ci_one_number_syscall_proof(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
