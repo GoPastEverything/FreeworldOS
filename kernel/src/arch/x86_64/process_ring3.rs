@@ -100,13 +100,13 @@ static M5R_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5s-ci-self-test")]
 static M5S_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5s-ci-self-test")]
-pub const M5S_CODE: [u8; 62] = [
+pub const M5S_CODE: [u8; 60] = [
     0xb8, 2, 0, 0, 0, // eax=2
     0x48, 0xbf, 0, 0x30, 0, 0x30, 0, 0x50, 0, 0, // rdi=0x500030003000 (unmapped)
     0xbe, 20, 0, 0, 0, // esi=20
     0x0f, 0x05, // syscall, return -EFAULT
     0x48, 0x83, 0xf8, 0xf2, // cmp rax, -14
-    0x75, 0x20, // jne final UD2 at offset 60
+    0x75, 0x1e, // jne final UD2 at offset 58
     0xb8, 2, 0, 0, 0, // eax=2
     0x48, 0xbf, 0x80, 0, 0x30, 0, 0x50, 0, 0, // rdi=good text
     0xbe, 20, 0, 0, 0, // esi=20
@@ -1089,7 +1089,7 @@ unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bo
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
     EXPECTED_RIP.store(user_rip + if push_mode { PUSH_RETURN_RIP_OFFSET } else {
         #[cfg(feature = "m5o-ci-self-test")]
-        { if M5S_MODE_ACTIVE() { 60 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
+        { if M5S_MODE_ACTIVE() { 58 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
         #[cfg(not(feature = "m5o-ci-self-test"))]
         { RETURN_RIP_OFFSET }
     }, Ordering::Release);
