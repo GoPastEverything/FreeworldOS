@@ -288,7 +288,7 @@ pub unsafe fn suspend_a_run_b_resume_a(
     unsafe { suspend_resume_with_hook(root_phys, user_rip, user_rsp, bottom, top, run_b) }
 }
 
-unsafe fn suspend_resume_with_hook(
+pub(crate) unsafe fn suspend_resume_with_hook(
     root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
     run_during_suspend: impl FnOnce(),
 ) -> Ring3ProcessProof {
