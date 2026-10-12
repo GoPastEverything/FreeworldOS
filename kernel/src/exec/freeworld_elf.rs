@@ -54,14 +54,17 @@ pub fn test_image(version: u32) -> [u8; IMAGE_BYTES] {
     let p = HEADER + PH_SIZE;
     put32(&mut b, p, 4);
     put64(&mut b, p+8, NOTE_AT as u64);
-    put64(&mut b, p+32, 28);
-    put64(&mut b, p+40, 28);
+    put64(&mut b, p+32, 40);
+    put64(&mut b, p+40, 40);
     put64(&mut b, p+48, 4);
     put32(&mut b, NOTE_AT, 12);
-    put32(&mut b, NOTE_AT+4, 4);
+    put32(&mut b, NOTE_AT+4, 16);
     put32(&mut b, NOTE_AT+8, 1);
     b[NOTE_AT+12..NOTE_AT+24].copy_from_slice(b"FreeWorldOS\0");
     put32(&mut b, NOTE_AT+24, version);
+    put32(&mut b, NOTE_AT+28, 0); // environment: FreeWorld
+    put32(&mut b, NOTE_AT+32, 0); // flags: none
+    put32(&mut b, NOTE_AT+36, 0); // reserved: must be zero
     b[CODE_AT..].copy_from_slice(&crate::arch::process_ring3::M5P_STUB);
     b
 }
@@ -99,11 +102,14 @@ pub fn validate(bytes: &[u8]) -> Result<LoadSegment<'_>, Error> {
                 load = Some(data);
             }
             4 if !has_note => {
-                if size != 28 || get64(bytes,p+40)? != 28 || get32(data,0)? != 12
-                    || get32(data,4)? != 4 || get32(data,8)? != 1
+                if size != 40 || get64(bytes,p+40)? != 40 || get32(data,0)? != 12
+                    || get32(data,4)? != 16 || get32(data,8)? != 1
                     || data.get(12..24) != Some(&b"FreeWorldOS\0"[..])
                 { return Err(Error::MissingNote); }
                 if get32(data,24)? != 1 { return Err(Error::BadAbiVersion); }
+                if get32(data,28)? != 0 || get32(data,32)? != 0 || get32(data,36)? != 0 {
+                    return Err(Error::UnsupportedLayout);
+                }
                 has_note = true;
             }
             _ => return Err(Error::UnsupportedLayout),
@@ -123,6 +129,18 @@ pub fn ci_parser_test() -> Result<(), Error> {
         return Err(Error::UnsupportedLayout);
     }
     if validate(&test_image(2)).err() != Some(Error::BadAbiVersion) {
+        return Err(Error::UnsupportedLayout);
+    }
+    for descriptor_offset in [NOTE_AT+28, NOTE_AT+32, NOTE_AT+36] {
+        let mut bad = good;
+        bad[descriptor_offset] = 1;
+        if validate(&bad).err() != Some(Error::UnsupportedLayout) {
+            return Err(Error::UnsupportedLayout);
+        }
+    }
+    let mut old_descriptor = good;
+    put32(&mut old_descriptor, NOTE_AT+4, 4);
+    if validate(&old_descriptor).err() != Some(Error::MissingNote) {
         return Err(Error::UnsupportedLayout);
     }
     let mut bad_name = good;
