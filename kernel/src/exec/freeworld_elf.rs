@@ -69,6 +69,26 @@ pub fn test_image(version: u32) -> [u8; IMAGE_BYTES] {
     b
 }
 
+#[cfg(feature = "m5r-ci-self-test")]
+pub const HELLO_IMAGE_BYTES: usize = CODE_AT + 0x80 + 20;
+
+/// Native ELF v1 with one executable PT_LOAD containing code plus embedded
+/// read-only message bytes at virtual CODE+0x80. Nothing is hardcoded into the
+/// kernel's ELF-to-page staging path.
+#[cfg(feature = "m5r-ci-self-test")]
+pub fn hello_image() -> [u8; HELLO_IMAGE_BYTES] {
+    let base = test_image(1);
+    let mut image = [0u8; HELLO_IMAGE_BYTES];
+    image[..CODE_AT].copy_from_slice(&base[..CODE_AT]);
+    put64(&mut image, HEADER+32, 0x80+20);
+    put64(&mut image, HEADER+40, 0x80+20);
+    image[CODE_AT..CODE_AT+crate::arch::process_ring3::M5R_CODE.len()]
+        .copy_from_slice(&crate::arch::process_ring3::M5R_CODE);
+    image[CODE_AT+0x80..CODE_AT+0x80+20]
+        .copy_from_slice(crate::arch::process_ring3::M5R_TEXT);
+    image
+}
+
 pub struct LoadSegment<'a> { pub entry: u64, pub code: &'a [u8] }
 
 pub fn validate(bytes: &[u8]) -> Result<LoadSegment<'_>, Error> {
