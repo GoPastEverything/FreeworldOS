@@ -58,6 +58,14 @@ impl ProcessAddressSpace {
         crate::arch::memory::map_test_callgate(self.root_frame, leaf)
     }
 
+    #[cfg(feature = "m5q-ci-self-test")]
+    pub fn ci_load_freeworld_elf(&self, bytes: &[u8], bottom: u64, top: u64)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_load_freeworld_elf_proof(self.root_frame, leaf, bottom, top, bytes)
+    }
+
     #[cfg(feature = "m5p-ci-self-test")]
     pub fn ci_one_number_syscall(&self, bottom: u64, top: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
