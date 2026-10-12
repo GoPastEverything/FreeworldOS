@@ -85,6 +85,8 @@ static EXPECTED_ROOT: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RIP: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RSP: AtomicU64 = AtomicU64::new(0);
 static FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5m-ci-self-test")]
+static QUEUE_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5k-ci-self-test")]
 static SUSPEND_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5k-ci-self-test")]
@@ -406,6 +408,163 @@ pub(crate) unsafe fn suspend_resume_with_hook(
     })
 }
 
+// M5-M only. The caller owns both processes and keeps their stack frames
+// mapped until the entire explicit A,B,A pick sequence is complete.
+#[cfg(feature = "m5m-ci-self-test")]
+#[derive(Clone, Copy, Debug)]
+pub struct ExplicitQueueProof {
+    pub root_a: u64,
+    pub root_b: u64,
+    pub frame_a_first: u64,
+    pub frame_a_second: u64,
+    pub frame_a_final: u64,
+    pub frame_b_first: u64,
+    pub frame_b_second: u64,
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+pub fn queue_stub_bytes(a: bool) -> [u8; 19] {
+    // A: MOV/PUSH/INT/INT/INT/UD2. B: MOV/PUSH/INT/INT/UD2/NOP/NOP.
+    let mut bytes = [0x90; 19];
+    let source = resume_stub_bytes();
+    bytes[..15].copy_from_slice(&source[..15]);
+    if a {
+        bytes[15] = 0xcd; bytes[16] = RETURN_VECTOR;
+        bytes[17] = 0x0f; bytes[18] = 0x0b;
+    } else {
+        bytes[15] = 0x0f; bytes[16] = 0x0b;
+    }
+    bytes
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+pub unsafe fn run_explicit_two_slot_queue(
+    a_root: u64, a_bottom: u64, a_top: u64,
+    b_root: u64, b_bottom: u64, b_top: u64,
+) -> ExplicitQueueProof {
+    use crate::object::explicit_queue::{Slot, TwoSlotQueue};
+    const ENTRY: u64 = 0x0000_5000_3000_0000;
+    const USER_TOP: u64 = 0x0000_5000_3000_2000;
+    assert_ne!(a_root, b_root);
+    assert!(a_top <= b_bottom || b_top <= a_bottom);
+    assert_eq!(a_top - a_bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert_eq!(b_top - b_bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert!(!super::in_interrupt());
+
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let bootstrap = gdt::read_rsp0();
+        QUEUE_MODE.store(true, Ordering::Release);
+        let mut queue = TwoSlotQueue::new_suspended();
+
+        // Both first interrupts complete before pick_next is ever called.
+        unsafe { gdt::write_rsp0(a_top); }
+        set_queue_stack(a_bottom, a_top);
+        let a_initial = unsafe { enter_mode(a_root, ENTRY, USER_TOP, true) };
+        let a_first = a_initial.frame_address;
+        assert_eq!(a_first, a_top - FRAME_SIZE as u64);
+        let a_snapshot = snapshot_frame(a_first);
+        assert_eq!(gdt::read_rsp0(), a_top);
+
+        unsafe { gdt::write_rsp0(b_top); }
+        set_queue_stack(b_bottom, b_top);
+        let b_initial = unsafe { enter_mode(b_root, ENTRY, USER_TOP, true) };
+        let b_first = b_initial.frame_address;
+        assert_eq!(b_first, b_top - FRAME_SIZE as u64);
+        let b_snapshot = snapshot_frame(b_first);
+        assert_eq!(gdt::read_rsp0(), b_top);
+        check_frame_unchanged(a_first, &a_snapshot);
+
+        assert_eq!(queue.pick_next().expect("M5-M pick A"), Slot::A);
+        set_queue_stack(a_bottom, a_top);
+        unsafe { gdt::write_rsp0(a_first); }
+        let a_second = unsafe { resume_queue_frame(a_first, a_root, ENTRY + 15) };
+        assert_eq!(a_second, a_top - 2 * FRAME_SIZE as u64);
+        check_frame_unchanged(b_first, &b_snapshot);
+
+        assert_eq!(queue.pick_next().expect("M5-M pick B"), Slot::B);
+        set_queue_stack(b_bottom, b_top);
+        unsafe { gdt::write_rsp0(b_first); }
+        let b_second = unsafe { resume_queue_frame(b_first, b_root, ENTRY + 15) };
+        assert_eq!(b_second, b_top - 2 * FRAME_SIZE as u64);
+        let b_second_snapshot = snapshot_frame(b_second);
+        let a_second_snapshot = snapshot_frame(a_second);
+
+        assert_eq!(queue.pick_next().expect("M5-M pick A final"), Slot::A);
+        check_frame_unchanged(a_first, &a_snapshot);
+        check_frame_unchanged(a_second, &a_second_snapshot);
+        check_frame_unchanged(b_first, &b_snapshot);
+        check_frame_unchanged(b_second, &b_second_snapshot);
+        set_queue_stack(a_bottom, a_top);
+        unsafe { gdt::write_rsp0(a_second); }
+        let a_final = unsafe { resume_queue_frame(a_second, a_root, ENTRY + 17) };
+        assert_eq!(a_final, a_top - 3 * FRAME_SIZE as u64);
+        assert_eq!(gdt::read_rsp0(), a_second);
+        assert!(queue.pick_next().is_err(), "queue must not silently cycle");
+        check_frame_unchanged(b_second, &b_second_snapshot);
+        let (kernel, _) = Cr3::read();
+        assert_eq!(kernel.start_address().as_u64(), a_initial.original_kernel_cr3);
+        assert_eq!(kernel.start_address().as_u64(), b_initial.original_kernel_cr3);
+        assert_ne!(gdt::read_rsp0(), bootstrap, "RSP0 restored before final return");
+        unsafe { gdt::write_rsp0(bootstrap); }
+        assert_eq!(gdt::read_rsp0(), bootstrap);
+        QUEUE_MODE.store(false, Ordering::Release);
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        assert!(!super::interrupts_enabled());
+        assert!(!ARMED.load(Ordering::Acquire));
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-M queue: picks=A,B,A root_a={a_root:#x} root_b={b_root:#x} a_first={a_first:#x} a_second={a_second:#x} a_final={a_final:#x} b_first={b_first:#x} b_second={b_second:#x} bootstrap_rsp0=restored_after_final\\n"
+        ));
+        ExplicitQueueProof {
+            root_a: a_root, root_b: b_root,
+            frame_a_first: a_first, frame_a_second: a_second,
+            frame_a_final: a_final, frame_b_first: b_first,
+            frame_b_second: b_second,
+        }
+    })
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+fn snapshot_frame(address: u64) -> [u64; 20] {
+    core::array::from_fn(|i| unsafe {
+        core::ptr::read_volatile((address as *const u64).add(i))
+    })
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+fn check_frame_unchanged(address: u64, snapshot: &[u64; 20]) {
+    for (i, original) in snapshot.iter().enumerate() {
+        assert_eq!(unsafe { core::ptr::read_volatile((address as *const u64).add(i)) },
+            *original, "M5-M: other process overwrote suspended frame");
+    }
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+fn set_queue_stack(bottom: u64, top: u64) {
+    PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+    PRIVATE_STACK_TOP.store(top, Ordering::Release);
+    PRIVATE_STACK_MODE.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "m5m-ci-self-test")]
+unsafe fn resume_queue_frame(frame: u64, root: u64, expected_rip: u64) -> u64 {
+    assert_eq!(unsafe { (*(frame as *const UserFrame)).rip }, expected_rip - 2);
+    EXPECTED_ROOT.store(root, Ordering::Release);
+    EXPECTED_RSP.store(0x0000_5000_3000_1ff8, Ordering::Release);
+    EXPECTED_RIP.store(expected_rip, Ordering::Release);
+    FRAME_ADDRESS.store(0, Ordering::Release);
+    RETURN_SEEN.store(false, Ordering::Release);
+    assert!(!ARMED.swap(true, Ordering::AcqRel));
+    let (kernel_before, _) = Cr3::read();
+    let returned = unsafe { __freeworld_m5k_resume_frame(frame, root) };
+    assert_eq!(returned, 1);
+    assert!(RETURN_SEEN.load(Ordering::Acquire));
+    assert!(!ARMED.load(Ordering::Acquire));
+    assert_eq!(Cr3::read().0.start_address().as_u64(),
+        kernel_before.start_address().as_u64());
+    FRAME_ADDRESS.load(Ordering::Acquire)
+}
+
 unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bool) -> Ring3ProcessProof {
     assert!(!super::in_interrupt(), "M5-G called from interrupt handler");
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
@@ -510,6 +669,12 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     gdt::restore_kernel_data_segments();
     assert_eq!(SS::get_reg(), gdt::kernel_data_selector());
 
+    #[cfg(feature = "m5m-ci-self-test")]
+    if QUEUE_MODE.load(Ordering::Acquire) {
+        assert_eq!(frame_address + FRAME_SIZE as u64, gdt::read_rsp0());
+        // CPU uses RSP0 as exclusive top, and the 15 saved GPRs precede
+        // the hardware frame. The test owner must retain this stack.
+    }
     #[cfg(feature = "m5k-ci-self-test")]
     if SUSPEND_MODE.load(Ordering::Acquire) {
         let top = PRIVATE_STACK_TOP.load(Ordering::Acquire);
