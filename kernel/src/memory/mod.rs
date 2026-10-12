@@ -59,6 +59,14 @@ impl ProcessAddressSpace {
     }
 
     #[cfg(feature = "m5i-ci-self-test")]
+    #[cfg(feature = "m5k-ci-self-test")]
+    pub fn ci_suspend_resume(&self, bottom: u64, top: u64)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_process_suspend_resume(self.root_frame, leaf, bottom, top)
+    }
+
     pub fn ci_private_rsp0(&self, bottom: u64, top: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
     {
