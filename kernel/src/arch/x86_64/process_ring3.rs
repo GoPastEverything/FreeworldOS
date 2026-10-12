@@ -281,7 +281,6 @@ pub unsafe fn suspend_and_resume_once(
     assert_eq!(top & 15, 0);
     assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
     assert!(!super::in_interrupt());
-    assert!(!super::interrupts_enabled());
     PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
     PRIVATE_STACK_TOP.store(top, Ordering::Release);
     PRIVATE_STACK_MODE.store(true, Ordering::Release);
@@ -293,6 +292,7 @@ pub unsafe fn suspend_and_resume_once(
     // and the kernel call-stack continuation. The resumption gate preserves
     // the same 160-byte hardware frame, not the stub entry point.
     x86_64::instructions::interrupts::without_interrupts(|| {
+        assert!(!super::interrupts_enabled());
         let bootstrap_rsp0 = gdt::read_rsp0();
         unsafe { gdt::write_rsp0(top); }
         let first = unsafe { enter_mode(root_phys, user_rip, user_rsp, true) };
