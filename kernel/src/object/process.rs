@@ -79,6 +79,17 @@ impl ProcessObject {
         Ok(self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds())
     }
 
+    #[cfg(feature = "m5n-ci-self-test")]
+    pub fn map_test_callgate(&mut self) -> Result<(), MemoryError> {
+        self.address_space.map_test_callgate()
+    }
+
+    #[cfg(feature = "m5n-ci-self-test")]
+    pub fn ci_callgate_proof(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        let (bottom, top) = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds();
+        self.address_space.ci_callgate_proof(bottom, top)
+    }
+
     #[cfg(feature = "m5m-ci-self-test")]
     pub fn ci_stage_explicit_queue(&self, is_a: bool) -> Result<(), MemoryError> {
         self.address_space.ci_stage_explicit_queue(is_a)
