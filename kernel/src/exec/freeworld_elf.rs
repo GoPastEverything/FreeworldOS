@@ -89,6 +89,14 @@ pub fn hello_image() -> [u8; HELLO_IMAGE_BYTES] {
     image
 }
 
+#[cfg(feature = "m5s-ci-self-test")]
+pub fn invalid_then_hello_image() -> [u8; HELLO_IMAGE_BYTES] {
+    let mut image = hello_image();
+    let len = crate::arch::process_ring3::M5S_CODE.len();
+    image[CODE_AT..CODE_AT+len].copy_from_slice(&crate::arch::process_ring3::M5S_CODE);
+    image
+}
+
 pub struct LoadSegment<'a> { pub entry: u64, pub code: &'a [u8] }
 
 pub fn validate(bytes: &[u8]) -> Result<LoadSegment<'_>, Error> {
