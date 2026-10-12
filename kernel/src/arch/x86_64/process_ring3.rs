@@ -303,7 +303,8 @@ unsafe fn configure_m5o_syscall() {
         }
     }
     // Long-mode SYSRET derives ring-3 CS = STAR[63:48] + 16, SS = +8.
-    let kcs = u64::from(gdt::kernel_code_selector().0);
+    let kcs = u64::from(CS::get_reg().0);
+    assert_eq!(kcs & 3, 0);
     let ucs = u64::from(super::user_code_selector().0);
     let uds = u64::from(super::user_data_selector().0);
     assert_eq!(ucs, (uds + 8));
