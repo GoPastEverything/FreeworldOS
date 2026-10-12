@@ -69,14 +69,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         panic!("M3 heap initialization failed: {error:?}");
     }
 
-    #[cfg(feature = "m5j-ci-self-test")]
-    {
-        debug::selftest::run_result(
-            "m5j.two_process_private_rsp0",
-            object::two_process_private_rsp0_ci_self_test,
-        );
-    }
-
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(
@@ -203,6 +195,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         debug::selftest::run_result(
             "m5i.private_rsp0",
             object::process_private_rsp0_ci_self_test,
+        );
+    }
+
+    #[cfg(feature = "m5j-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5j.two_process_private_rsp0",
+            object::two_process_private_rsp0_ci_self_test,
         );
     }
 
