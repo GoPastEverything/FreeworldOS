@@ -1088,3 +1088,60 @@ pub fn two_process_private_rsp0_ci_self_test() -> Result<(), ObjectError> {
     );
     Ok(())
 }
+
+#[cfg(feature = "m5k-ci-self-test")]
+pub fn process_suspend_resume_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+    let original_rsp0 = crate::arch::current_tss_rsp0();
+    if original_rsp0 != crate::arch::ring0_privilege_stack_top() {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let live_before = process::live_count();
+    let before = crate::memory::frame_reuse_stats()?;
+    // Kernel stack mapped first, then copied into the process-owned PML4.
+    let mut a = ProcessObject::new_with_private_kernel_stack(profile)?;
+    a.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    a.map_adjacent_user_stack()?;
+    let handle_a = handle::insert(Arc::new(FwObject::Process(a)), Rights::READ)?;
+    let strong_a = handle::get(handle_a, Rights::READ)?;
+    let (proof, stack, root) = match strong_a.as_ref() {
+        FwObject::Process(p) => {
+            let bounds = p.ci_private_stack_bounds()?;
+            let root = p.info().address_space_root.start;
+            (p.ci_suspend_resume()?, bounds, root)
+        },
+        _ => return Err(ObjectError::WrongObjectType),
+    };
+    if proof.observed_process_cr3 & !0xfff != root
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address != stack.1 - 160
+        || stack.1 - stack.0 != 4 * 4096
+        || crate::arch::current_tss_rsp0() != original_rsp0
+        || process::live_count() != live_before + 1
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    drop(strong_a);
+    close(handle_a)?;
+    if process::live_count() != live_before || crate::arch::current_tss_rsp0() != original_rsp0 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 10 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-K suspend/resume self-test: passed first_frame=top_minus_160 second_frame=top_minus_320 resume_rip=0x50003000000d final_rip=0x50003000000f marker=once final_cr3=kernel bootstrap_rsp0=restored_after_final frames_returned=10 if=masked scheduler=off callgate=off",
+    );
+    Ok(())
+}
