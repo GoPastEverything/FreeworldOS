@@ -258,6 +258,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::test_freeworld_elf_ci_self_test,
         );
     }
+    #[cfg(feature = "m5r-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5r.hello_from_freeworld",
+            object::test_hello_from_freeworld_ci_self_test,
+        );
+    }
 
     #[cfg(feature = "m3-ci-self-test")]
     {
