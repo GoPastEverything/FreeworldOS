@@ -206,6 +206,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m5k-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5k.process_suspend_resume",
+            object::process_suspend_resume_ci_self_test,
+        );
+    }
+
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(

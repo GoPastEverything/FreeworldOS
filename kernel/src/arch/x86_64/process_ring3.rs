@@ -37,6 +37,23 @@ pub const fn stub_bytes() -> [u8; CODE_SIZE] {
 
 const RETURN_RIP_OFFSET: u64 = 12;
 const PUSH_RETURN_RIP_OFFSET: u64 = 13;
+#[cfg(feature = "m5k-ci-self-test")]
+const SUSPEND_RIP: u64 = 0x0000_5000_3000_000d;
+#[cfg(feature = "m5k-ci-self-test")]
+const FINAL_RIP: u64 = 0x0000_5000_3000_000f;
+#[cfg(feature = "m5k-ci-self-test")]
+pub const RESUME_CODE_SIZE: usize = 17;
+#[cfg(feature = "m5k-ci-self-test")]
+pub const fn resume_stub_bytes() -> [u8; RESUME_CODE_SIZE] {
+    [
+        0x48, 0xb8,
+        (USER_MARKER >> 0) as u8, (USER_MARKER >> 8) as u8,
+        (USER_MARKER >> 16) as u8, (USER_MARKER >> 24) as u8,
+        (USER_MARKER >> 32) as u8, (USER_MARKER >> 40) as u8,
+        (USER_MARKER >> 48) as u8, (USER_MARKER >> 56) as u8,
+        0x50, 0xcd, RETURN_VECTOR, 0xcd, RETURN_VECTOR, 0x0f, 0x0b,
+    ]
+}
 pub const PUSH_CODE_SIZE: usize = 15;
 pub const fn push_stub_bytes() -> [u8; PUSH_CODE_SIZE] {
     [
@@ -68,6 +85,14 @@ static EXPECTED_ROOT: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RIP: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_RSP: AtomicU64 = AtomicU64::new(0);
 static FRAME_ADDRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5k-ci-self-test")]
+static SUSPEND_MODE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m5k-ci-self-test")]
+static TRAP_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5k-ci-self-test")]
+static FIRST_FRAME: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "m5k-ci-self-test")]
+static FINAL_FRAME: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "m5i-ci-self-test")]
 static PRIVATE_STACK_BOTTOM: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "m5i-ci-self-test")]
@@ -129,6 +154,36 @@ __freeworld_m5g_resume:
     pop rbx
     ret
 
+    .global __freeworld_m5k_resume_frame
+    .type __freeworld_m5k_resume_frame,@function
+__freeworld_m5k_resume_frame:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov qword ptr [rip + __freeworld_m5g_saved_rsp], rsp
+    mov cr3, rsi
+    mov rsp, rdi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+    ud2
+
     .global __freeworld_m5g_return_entry
     .type __freeworld_m5g_return_entry,@function
 __freeworld_m5g_return_entry:
@@ -167,6 +222,8 @@ unsafe extern "C" {
         user_cs: u64, user_ss: u64,
     ) -> u64;
     fn __freeworld_m5g_return_entry();
+    #[cfg(feature = "m5k-ci-self-test")]
+    fn __freeworld_m5k_resume_frame(frame: u64, process_cr3: u64) -> u64;
     static __freeworld_m5g_kernel_cr3: u64;
     static __freeworld_m5g_process_cr3_observed: u64;
 }
@@ -211,6 +268,76 @@ pub unsafe fn enter_once_private_rsp0(
         assert!(proof.frame_address >= bottom && proof.frame_address + FRAME_SIZE as u64 <= top);
         PRIVATE_STACK_MODE.store(false, Ordering::Release);
         proof
+    })
+}
+
+#[cfg(feature = "m5k-ci-self-test")]
+pub unsafe fn suspend_and_resume_once(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64
+) -> Ring3ProcessProof {
+    assert_eq!(user_rip, 0x0000_5000_3000_0000);
+    assert_eq!(user_rsp, 0x0000_5000_3000_2000);
+    assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert_eq!(top & 15, 0);
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert!(!super::in_interrupt());
+    PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+    PRIVATE_STACK_TOP.store(top, Ordering::Release);
+    PRIVATE_STACK_MODE.store(true, Ordering::Release);
+    SUSPEND_MODE.store(true, Ordering::Release);
+    TRAP_COUNT.store(0, Ordering::Release);
+    FIRST_FRAME.store(0, Ordering::Release);
+    FINAL_FRAME.store(0, Ordering::Release);
+    // Both transitions remain masked. The initial gate saves bootstrap CR3
+    // and the kernel call-stack continuation. The resumption gate preserves
+    // the same 160-byte hardware frame, not the stub entry point.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        assert!(!super::interrupts_enabled());
+        let bootstrap_rsp0 = gdt::read_rsp0();
+        unsafe { gdt::write_rsp0(top); }
+        let first = unsafe { enter_mode(root_phys, user_rip, user_rsp, true) };
+        assert_eq!(TRAP_COUNT.load(Ordering::Acquire), 1);
+        assert_eq!(first.frame_address, top - FRAME_SIZE as u64);
+        assert_eq!(FIRST_FRAME.load(Ordering::Acquire), first.frame_address);
+        assert_eq!(gdt::read_rsp0(), top, "RSP0 restored during suspension");
+        // Resume target is the second INT, not the original MOV/PUSH.
+        let suspended = unsafe { &*(first.frame_address as *const UserFrame) };
+        assert_eq!(suspended.rip, SUSPEND_RIP);
+        assert_eq!(suspended.rsp, user_rsp - 8);
+        assert_eq!(suspended.rax, USER_MARKER);
+        assert_eq!(suspended.rflags & (1 << 9), 0);
+        assert_eq!(suspended.cs & 3, 3);
+        assert_eq!(suspended.ss & 3, 3);
+        EXPECTED_RIP.store(FINAL_RIP, Ordering::Release);
+        RETURN_SEEN.store(false, Ordering::Release);
+        assert!(!ARMED.swap(true, Ordering::AcqRel));
+        unsafe { gdt::write_rsp0(top - FRAME_SIZE as u64); }
+        assert_eq!(gdt::read_rsp0(), top - FRAME_SIZE as u64);
+        let returned = unsafe { __freeworld_m5k_resume_frame(first.frame_address, root_phys) };
+        assert_eq!(returned, 1);
+        assert_eq!(TRAP_COUNT.load(Ordering::Acquire), 2);
+        assert!(RETURN_SEEN.load(Ordering::Acquire));
+        assert_eq!(FINAL_FRAME.load(Ordering::Acquire), top - 2 * FRAME_SIZE as u64);
+        assert_eq!(FRAME_ADDRESS.load(Ordering::Acquire), top - 2 * FRAME_SIZE as u64);
+        assert_eq!(gdt::read_rsp0(), top - FRAME_SIZE as u64, "RSP0 restored before final return");
+        let (after, _) = Cr3::read();
+        assert_eq!(after.start_address().as_u64(), first.original_kernel_cr3);
+        unsafe { gdt::write_rsp0(bootstrap_rsp0); }
+        assert_eq!(gdt::read_rsp0(), bootstrap_rsp0);
+        assert!(!ARMED.load(Ordering::Acquire));
+        assert!(!super::interrupts_enabled());
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        SUSPEND_MODE.store(false, Ordering::Release);
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-K two traps: first={:#x} second={:#x} first_rip={SUSPEND_RIP:#x} final_rip={FINAL_RIP:#x} rsp0=restored_after_final\\n",
+            first.frame_address, FINAL_FRAME.load(Ordering::Acquire)
+        ));
+        Ring3ProcessProof {
+            original_kernel_cr3: first.original_kernel_cr3,
+            restored_kernel_cr3: after.start_address().as_u64(),
+            observed_process_cr3: first.observed_process_cr3,
+            frame_address: first.frame_address,
+        }
     })
 }
 
@@ -276,6 +403,10 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
 
     let scope = interrupt_context::enter();
     assert!(ARMED.swap(false, Ordering::AcqRel), "M5-G return not armed");
+    #[cfg(feature = "m5k-ci-self-test")]
+    let trap_index = if SUSPEND_MODE.load(Ordering::Acquire) {
+        TRAP_COUNT.fetch_add(1, Ordering::AcqRel) + 1
+    } else { 0 };
 
     let frame_address = frame as u64;
     let (bottom, top) = {
@@ -314,6 +445,21 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     gdt::restore_kernel_data_segments();
     assert_eq!(SS::get_reg(), gdt::kernel_data_selector());
 
+    #[cfg(feature = "m5k-ci-self-test")]
+    if SUSPEND_MODE.load(Ordering::Acquire) {
+        let top = PRIVATE_STACK_TOP.load(Ordering::Acquire);
+        if trap_index == 1 {
+            assert_eq!(frame_address, top - FRAME_SIZE as u64);
+            assert_eq!(frame.rip, SUSPEND_RIP);
+            FIRST_FRAME.store(frame_address, Ordering::Release);
+        } else {
+            assert_eq!(trap_index, 2);
+            assert_eq!(frame_address, top - 2 * FRAME_SIZE as u64);
+            assert_eq!(frame.rip, FINAL_RIP);
+            assert_eq!(FIRST_FRAME.load(Ordering::Acquire), top - FRAME_SIZE as u64);
+            FINAL_FRAME.store(frame_address, Ordering::Release);
+        }
+    }
     FRAME_ADDRESS.store(frame_address, Ordering::Release);
     RETURN_SEEN.store(true, Ordering::Release);
 

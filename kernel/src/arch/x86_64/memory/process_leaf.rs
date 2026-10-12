@@ -484,6 +484,54 @@ impl InactiveUserLeaf {
     }
 }
 
+#[cfg(feature = "m5k-ci-self-test")]
+pub fn ci_process_suspend_resume(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const STACK: u64 = 0x0000_5000_3000_1000;
+    let stack_frame = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    if mapping.virtual_address != CODE {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        if !matches!(manager.mapper.translate(VirtAddr::new(CODE)), TranslateResult::NotMapped)
+            || !matches!(manager.mapper.translate(VirtAddr::new(STACK)), TranslateResult::NotMapped)
+        {
+            return Err(MemoryError::PageAlreadyMapped);
+        }
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let bytes = crate::arch::process_ring3::resume_stub_bytes();
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+        Ok(())
+    })??;
+    let proof = unsafe {
+        crate::arch::process_ring3::suspend_and_resume_once(
+            root.start, CODE, STACK + PAGE_SIZE, bottom, top,
+        )
+    };
+    // One and only one marker read, AFTER the final kernel CR3 restore.
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address != top - 160
+    {
+        return Err(MemoryError::ProcessUserLeafCorrupt);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let pointer = manager.allocator.direct_map_pointer(stack_frame.start);
+        let marker = unsafe {
+            core::ptr::read_volatile(pointer.add(PAGE_SIZE as usize - 8) as *const u64)
+        };
+        if marker != crate::arch::process_ring3::USER_MARKER {
+            return Err(MemoryError::SelfTestDataMismatch);
+        }
+        Ok(())
+    })??;
+    Ok(proof)
+}
+
 #[cfg(feature = "m5h-ci-self-test")]
 pub fn ci_process_stack_push(
     root: PhysFrame,

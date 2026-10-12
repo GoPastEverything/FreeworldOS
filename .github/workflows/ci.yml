@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -278,6 +278,8 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5h.process_user_stack" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5i.private_rsp0" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5j.two_process_private_rsp0" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5k.process_suspend_resume" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-K suspend/resume self-test: passed first_frame=top_minus_160 second_frame=top_minus_320 resume_rip=0x50003000000d final_rip=0x50003000000f marker=once final_cr3=kernel bootstrap_rsp0=restored_after_final frames_returned=10 if=masked scheduler=off callgate=off" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M5-J sequential process entry: root_a=0x[0-9a-f]+ root_b=0x[0-9a-f]+ frame_a=0xffff[0-9a-f]+ frame_b=0xffff[0-9a-f]+ stack_a=\\[0xffff[0-9a-f]+\\.\\.0xffff[0-9a-f]+\\) stack_b=\\[0xffff[0-9a-f]+\\.\\.0xffff[0-9a-f]+\\) bootstrap_rsp0=0xffff[0-9a-f]+ restored_each=ok frames_returned=20" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-J two-process private RSP0 self-test: passed distinct_cr3=ok distinct_kernel_stacks=ok frame_a=private_160 frame_b=private_160 bootstrap_rsp0=restored_after_each sequential=ok frames_returned=20 if=masked timer_switch=off scheduler=off callgate=off" selftest-boot-serial.log
           grep -Eq "FreeWorldOS: M5-I private RSP0 gate: frame=0xffff[0-9a-f]+ bottom=0xffff[0-9a-f]+ top=0xffff[0-9a-f]+ bytes=160 process_cr3=0x[0-9a-f]+ kernel_cr3=restored" selftest-boot-serial.log
