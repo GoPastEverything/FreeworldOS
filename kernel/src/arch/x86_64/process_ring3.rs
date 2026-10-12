@@ -610,7 +610,7 @@ pub unsafe fn ci_callgate_roundtrip(root: u64, bottom: u64, top: u64) -> Ring3Pr
 
         // IRETQ back to RET in the gate page, which pops the CALL return
         // address and reaches the next instruction with original user RSP.
-        EXPECTED_RIP.store(CODE + 7, Ordering::Release);
+        EXPECTED_RIP.store(CODE + 17, Ordering::Release);
         EXPECTED_RSP.store(USER_RSP, Ordering::Release);
         FRAME_ADDRESS.store(0, Ordering::Release);
         RETURN_SEEN.store(false, Ordering::Release);
@@ -622,7 +622,7 @@ pub unsafe fn ci_callgate_roundtrip(root: u64, bottom: u64, top: u64) -> Ring3Pr
         let second = FRAME_ADDRESS.load(Ordering::Acquire);
         assert_eq!(second, top - 2 * FRAME_SIZE as u64);
         let last = unsafe { &*(second as *const UserFrame) };
-        assert_eq!(last.rip, CODE + 7);
+        assert_eq!(last.rip, CODE + 17);
         assert_eq!(last.rsp, USER_RSP);
         assert_eq!(gdt::read_rsp0(), first);
         assert_eq!(Cr3::read().0.start_address().as_u64(), kernel_before.start_address().as_u64());
@@ -632,7 +632,7 @@ pub unsafe fn ci_callgate_roundtrip(root: u64, bottom: u64, top: u64) -> Ring3Pr
         PRIVATE_STACK_MODE.store(false, Ordering::Release);
         serial::write_fmt(format_args!(
             "FreeWorldOS: M5-N callgate: gate={GATE:#x} first={first:#x} second={second:#x} gate_return={:#x} user_rsp={USER_RSP:#x} rsp0=restored\\n",
-            CODE + 5,
+            CODE + 15,
         ));
         Ring3ProcessProof {
             original_kernel_cr3: kernel_before.start_address().as_u64(),
