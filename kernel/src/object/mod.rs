@@ -1373,7 +1373,7 @@ pub fn test_kernel_owned_callgate_ci_self_test() -> Result<(), ObjectError> {
         return Err(ObjectError::SelfTestFailed);
     }
     crate::arch::serial::println(
-        "FreeWorldOS: M5-N callgate self-test: passed gate=user_rx_kernel_owned call=near_return first=int_f2_from_gate next_user_instruction=0x500030000005 user_rsp=0x500030002000 bootstrap_rsp0=restored frames_returned=11 if=masked timer_choice=off scheduler=off",
+        "FreeWorldOS: M5-N callgate self-test: passed gate=user_rx_kernel_owned call=near_return first=int_f2_from_gate next_user_instruction=0x50003000000f user_rsp=0x500030002000 bootstrap_rsp0=restored frames_returned=11 if=masked timer_choice=off scheduler=off",
     );
     Ok(())
 }
