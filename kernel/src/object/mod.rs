@@ -4,6 +4,8 @@ pub mod counter;
 pub mod handle;
 pub mod module;
 pub mod process;
+#[cfg(feature = "m5m-ci-self-test")]
+pub(crate) mod explicit_queue;
 pub mod task;
 
 use counter::CounterObject;
