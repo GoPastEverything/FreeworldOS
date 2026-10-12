@@ -58,6 +58,16 @@ impl ProcessAddressSpace {
         crate::arch::memory::ci_process_stack_push(self.root_frame, leaf)
     }
 
+    #[cfg(feature = "m5l-ci-self-test")]
+    pub fn ci_suspend_a_b_a(&self, bottom: u64, top: u64, run_b: impl FnOnce())
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_process_suspend_a_b_a(
+            self.root_frame, leaf, bottom, top, run_b,
+        )
+    }
+
     #[cfg(feature = "m5k-ci-self-test")]
     pub fn ci_suspend_resume(&self, bottom: u64, top: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
