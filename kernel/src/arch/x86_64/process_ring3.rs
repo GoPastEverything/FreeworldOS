@@ -565,6 +565,84 @@ unsafe fn resume_queue_frame(frame: u64, root: u64, expected_rip: u64) -> u64 {
     FRAME_ADDRESS.load(Ordering::Acquire)
 }
 
+/// M5-N: one process, one kernel-owned RX user alias. The CALL itself does
+/// not switch rings. The gate's INT F2 performs the CPL3->CPL0 transition;
+/// the original 160-byte frame is IRETQ-resumed to its RET instruction.
+#[cfg(feature = "m5n-ci-self-test")]
+pub unsafe fn ci_callgate_roundtrip(root: u64, bottom: u64, top: u64) -> Ring3ProcessProof {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const GATE: u64 = CODE + 0x2000;
+    const USER_RSP: u64 = CODE + 0x2000;
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert!(!super::in_interrupt());
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let (kernel_before, _) = Cr3::read();
+        let bootstrap = gdt::read_rsp0();
+        PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+        PRIVATE_STACK_TOP.store(top, Ordering::Release);
+        PRIVATE_STACK_MODE.store(true, Ordering::Release);
+        EXPECTED_ROOT.store(root, Ordering::Release);
+        EXPECTED_RIP.store(GATE + 2, Ordering::Release);
+        EXPECTED_RSP.store(USER_RSP - 8, Ordering::Release);
+        FRAME_ADDRESS.store(0, Ordering::Release);
+        RETURN_SEEN.store(false, Ordering::Release);
+        PUSH_MODE.store(false, Ordering::Release);
+        assert!(!ARMED.swap(true, Ordering::AcqRel));
+        unsafe { gdt::write_rsp0(top); }
+        let returned = unsafe {
+            __freeworld_m5g_enter(
+                root, CODE, USER_RSP,
+                u64::from(super::user_code_selector().0),
+                u64::from(super::user_data_selector().0),
+            )
+        };
+        assert_eq!(returned, 1);
+        assert!(RETURN_SEEN.load(Ordering::Acquire));
+        assert!(!ARMED.load(Ordering::Acquire));
+        let first = FRAME_ADDRESS.load(Ordering::Acquire);
+        assert_eq!(first, top - FRAME_SIZE as u64);
+        let saved = unsafe { &*(first as *const UserFrame) };
+        assert_eq!(saved.rip, GATE + 2);
+        assert_eq!(saved.rsp, USER_RSP - 8);
+        assert_eq!(gdt::read_rsp0(), top);
+        assert_eq!(Cr3::read().0.start_address().as_u64(), kernel_before.start_address().as_u64());
+
+        // IRETQ back to RET in the gate page, which pops the CALL return
+        // address and reaches the next instruction with original user RSP.
+        EXPECTED_RIP.store(CODE + 7, Ordering::Release);
+        EXPECTED_RSP.store(USER_RSP, Ordering::Release);
+        FRAME_ADDRESS.store(0, Ordering::Release);
+        RETURN_SEEN.store(false, Ordering::Release);
+        assert!(!ARMED.swap(true, Ordering::AcqRel));
+        unsafe { gdt::write_rsp0(first); }
+        assert_eq!(unsafe { __freeworld_m5k_resume_frame(first, root) }, 1);
+        assert!(RETURN_SEEN.load(Ordering::Acquire));
+        assert!(!ARMED.load(Ordering::Acquire));
+        let second = FRAME_ADDRESS.load(Ordering::Acquire);
+        assert_eq!(second, top - 2 * FRAME_SIZE as u64);
+        let last = unsafe { &*(second as *const UserFrame) };
+        assert_eq!(last.rip, CODE + 7);
+        assert_eq!(last.rsp, USER_RSP);
+        assert_eq!(gdt::read_rsp0(), first);
+        assert_eq!(Cr3::read().0.start_address().as_u64(), kernel_before.start_address().as_u64());
+        unsafe { gdt::write_rsp0(bootstrap); }
+        assert_eq!(gdt::read_rsp0(), bootstrap);
+        assert!(!super::interrupts_enabled());
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-N callgate: gate={GATE:#x} first={first:#x} second={second:#x} gate_return={:#x} user_rsp={USER_RSP:#x} rsp0=restored\\n",
+            CODE + 5,
+        ));
+        Ring3ProcessProof {
+            original_kernel_cr3: kernel_before.start_address().as_u64(),
+            restored_kernel_cr3: Cr3::read().0.start_address().as_u64(),
+            observed_process_cr3: root,
+            frame_address: first,
+        }
+    })
+}
+
 unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bool) -> Ring3ProcessProof {
     assert!(!super::in_interrupt(), "M5-G called from interrupt handler");
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
