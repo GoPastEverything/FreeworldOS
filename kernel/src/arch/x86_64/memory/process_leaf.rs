@@ -223,8 +223,17 @@ pub fn ci_callgate_proof(root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u6
     with_manager(|manager| {
         verify_chain(manager, root, mapping)?;
         let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
-        // CALL rel32 +0x1ffb; INT F2 (final test return); UD2.
-        let bytes: [u8; 9] = [0xe8, 0xfb, 0x1f, 0, 0, 0xcd, 0xf2, 0x0f, 0x0b];
+        // MOVABS RAX, USER_MARKER; CALL rel32 +0x1ff1;
+        // final test-only INT F2 and unreachable UD2.
+        const MARKER: u64 = crate::arch::process_ring3::USER_MARKER;
+        let bytes: [u8; 19] = [
+            0x48, 0xb8,
+            (MARKER >> 0) as u8, (MARKER >> 8) as u8,
+            (MARKER >> 16) as u8, (MARKER >> 24) as u8,
+            (MARKER >> 32) as u8, (MARKER >> 40) as u8,
+            (MARKER >> 48) as u8, (MARKER >> 56) as u8,
+            0xe8, 0xf1, 0x1f, 0, 0, 0xcd, 0xf2, 0x0f, 0x0b,
+        ];
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
         Ok(())
     })??;
@@ -233,12 +242,12 @@ pub fn ci_callgate_proof(root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u6
        proof.observed_process_cr3 != root.start || proof.frame_address != top - 160
     { return Err(MemoryError::ProcessUserLeafCorrupt); }
     // One direct-map read after final kernel CR3 restoration. CALL pushed
-    // CODE+5; gate RET popped it, restoring the original user RSP.
+    // CODE+15; gate RET popped it, restoring the original user RSP.
     with_manager(|manager| {
         verify_chain(manager, root, mapping)?;
         let ptr = manager.allocator.direct_map_pointer(stack.start);
         let saved_return = unsafe { core::ptr::read_volatile(ptr.add(PAGE_SIZE as usize - 8) as *const u64) };
-        if saved_return != CODE + 5 { return Err(MemoryError::SelfTestDataMismatch); }
+        if saved_return != CODE + 15 { return Err(MemoryError::SelfTestDataMismatch); }
         Ok(())
     })??;
     Ok(proof)
