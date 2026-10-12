@@ -887,9 +887,13 @@ fn M5R_MODE_ACTIVE() -> bool {
     { false }
 }
 
-#[cfg(feature = "m5r-ci-self-test")]
+#[cfg(feature = "m5o-ci-self-test")]
 #[unsafe(no_mangle)]
 extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
+    #[cfg(not(feature = "m5r-ci-self-test"))]
+    { let _ = (ptr, len); return u64::MAX - 37; }
+    #[cfg(feature = "m5r-ci-self-test")]
+    {
     const BASE: u64 = 0x0000_5000_3000_0000;
     // Test-only range: the string must be in this process's existing U+RX
     // code leaf. No unbounded user-pointer dereference is permitted.
@@ -901,6 +905,7 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
     if copy != *M5R_TEXT { return u64::MAX - 21; }
     serial::println(core::str::from_utf8(&copy).expect("validated ASCII FreeWorld text"));
     len
+    }
 }
 
 #[cfg(feature = "m5r-ci-self-test")]
