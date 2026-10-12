@@ -251,10 +251,27 @@ pub unsafe fn enter_once_push(root_phys: u64, user_rip: u64, user_rsp: u64) -> R
 pub unsafe fn enter_once_private_rsp0(
     root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64
 ) -> Ring3ProcessProof {
+    unsafe { enter_private_rsp0_from(root_phys, user_rip, user_rsp, bottom, top, super::ring0_privilege_stack_top()) }
+}
+
+#[cfg(feature = "m5l-ci-self-test")]
+pub unsafe fn enter_private_rsp0_as_b(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
+    a_rsp0: u64,
+) -> Ring3ProcessProof {
+    unsafe { enter_private_rsp0_from(root_phys, user_rip, user_rsp, bottom, top, a_rsp0) }
+}
+
+#[cfg(feature = "m5i-ci-self-test")]
+unsafe fn enter_private_rsp0_from(
+    root_phys: u64, user_rip: u64, user_rsp: u64, bottom: u64, top: u64,
+    expected_prior_rsp0: u64,
+) -> Ring3ProcessProof {
     assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
     assert_eq!(top & 0xf, 0);
     assert!(bottom >= 0xffff_8000_0000_0000);
-    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert_eq!(gdt::read_rsp0(), expected_prior_rsp0);
+    assert_ne!(top, expected_prior_rsp0, "M5-L B cannot share A's stack top");
     PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
     PRIVATE_STACK_TOP.store(top, Ordering::Release);
     PRIVATE_STACK_MODE.store(true, Ordering::Release);
