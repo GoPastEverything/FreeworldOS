@@ -211,6 +211,39 @@ pub fn map_test_callgate(root: PhysFrame, mapping: &mut InactiveUserLeaf) -> Res
     })?
 }
 
+#[cfg(feature = "m5n-ci-self-test")]
+pub fn ci_callgate_proof(root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64)
+    -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+{
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.gate_frame.is_none() {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    let stack = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        // CALL rel32 +0x1ffb; INT F2 (final test return); UD2.
+        let bytes: [u8; 9] = [0xe8, 0xfb, 0x1f, 0, 0, 0xcd, 0xf2, 0x0f, 0x0b];
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+        Ok(())
+    })??;
+    let proof = unsafe { crate::arch::process_ring3::ci_callgate_roundtrip(root.start, bottom, top) };
+    if proof.original_kernel_cr3 != proof.restored_kernel_cr3 ||
+       proof.observed_process_cr3 != root.start || proof.frame_address != top - 160
+    { return Err(MemoryError::ProcessUserLeafCorrupt); }
+    // One direct-map read after final kernel CR3 restoration. CALL pushed
+    // CODE+5; gate RET popped it, restoring the original user RSP.
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(stack.start);
+        let saved_return = unsafe { core::ptr::read_volatile(ptr.add(PAGE_SIZE as usize - 8) as *const u64) };
+        if saved_return != CODE + 5 { return Err(MemoryError::SelfTestDataMismatch); }
+        Ok(())
+    })??;
+    Ok(proof)
+}
+
 fn verify_chain(
     manager: &X86MemoryManager,
     root: PhysFrame,
