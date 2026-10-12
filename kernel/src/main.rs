@@ -222,6 +222,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m5m-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5m.explicit_two_slot_queue",
+            object::explicit_two_slot_queue_ci_self_test,
+        );
+    }
+
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(
