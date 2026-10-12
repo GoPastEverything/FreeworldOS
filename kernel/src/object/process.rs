@@ -84,6 +84,14 @@ impl ProcessObject {
         self.address_space.map_test_callgate()
     }
 
+    #[cfg(feature = "m5q-ci-self-test")]
+    pub fn ci_load_freeworld_elf(&self, bytes: &[u8])
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let (bottom, top) = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds();
+        self.address_space.ci_load_freeworld_elf(bytes, bottom, top)
+    }
+
     #[cfg(feature = "m5p-ci-self-test")]
     pub fn ci_one_number_syscall(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
         let (bottom, top) = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds();
