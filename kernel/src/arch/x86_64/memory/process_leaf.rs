@@ -553,19 +553,27 @@ pub fn ci_process_stack_push(
     root: PhysFrame,
     mapping: &InactiveUserLeaf,
 ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
-    ci_process_stack_push_impl(root, mapping, None)
+    ci_process_stack_push_impl(root, mapping, None, None)
 }
 
 #[cfg(feature = "m5i-ci-self-test")]
 pub fn ci_process_stack_push_private(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64
 ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
-    ci_process_stack_push_impl(root, mapping, Some((bottom, top)))
+    ci_process_stack_push_impl(root, mapping, Some((bottom, top)), None)
+}
+
+#[cfg(feature = "m5l-ci-self-test")]
+pub fn ci_process_stack_push_as_b(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64, a_rsp0: u64
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    ci_process_stack_push_impl(root, mapping, Some((bottom, top)), Some(a_rsp0))
 }
 
 #[cfg(feature = "m5h-ci-self-test")]
 fn ci_process_stack_push_impl(
-    root: PhysFrame, mapping: &InactiveUserLeaf, private: Option<(u64, u64)>
+    root: PhysFrame, mapping: &InactiveUserLeaf, private: Option<(u64, u64)>,
+    prior_rsp0: Option<u64>
 ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
     const CODE: u64 = 0x0000_5000_3000_0000;
     const STACK: u64 = 0x0000_5000_3000_1000;
@@ -588,7 +596,16 @@ fn ci_process_stack_push_impl(
     // The upper bound is exclusive. PUSH writes at STACK+0xff8.
     let proof = if let Some((bottom, top)) = private {
         #[cfg(feature = "m5i-ci-self-test")]
-        { unsafe { crate::arch::process_ring3::enter_once_private_rsp0(root.start, CODE, STACK + PAGE_SIZE, bottom, top) } }
+        {
+            #[cfg(feature = "m5l-ci-self-test")]
+            if let Some(a_rsp0) = prior_rsp0 {
+                unsafe { crate::arch::process_ring3::enter_private_rsp0_as_b(root.start, CODE, STACK + PAGE_SIZE, bottom, top, a_rsp0) }
+            } else {
+                unsafe { crate::arch::process_ring3::enter_once_private_rsp0(root.start, CODE, STACK + PAGE_SIZE, bottom, top) }
+            }
+            #[cfg(not(feature = "m5l-ci-self-test"))]
+            { let _ = prior_rsp0; unsafe { crate::arch::process_ring3::enter_once_private_rsp0(root.start, CODE, STACK + PAGE_SIZE, bottom, top) } }
+        }
         #[cfg(not(feature = "m5i-ci-self-test"))]
         { let _ = (bottom, top); return Err(MemoryError::InvalidAddressSpaceRoot); }
     } else {
