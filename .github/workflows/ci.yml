@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test,m5l-ci-self-test,m5m-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test,m5l-ci-self-test,m5m-ci-self-test,m5n-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -281,6 +281,8 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5k.process_suspend_resume" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5l.suspend_a_run_b_resume_a" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5m.explicit_two_slot_queue" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5n.kernel_owned_callgate" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-N callgate self-test: passed gate=user_rx_kernel_owned call=near_return first=int_f2_from_gate next_user_instruction=0x50003000000f user_rsp=0x500030002000 bootstrap_rsp0=restored frames_returned=11 if=masked timer_choice=off scheduler=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-M two-slot explicit queue: passed picks=A,B,A a_frames=three_private b_frames=two_private distinct_cr3=ok markers=once bootstrap_rsp0=restored_at_end frames_returned=20 if=masked timer_choice=off callgate=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-L A-B-A isolation self-test: passed a_frame=unchanged_after_b a_resume_rip=0x50003000000d b_frame=private_only cr3=distinct marker=once rsp0=restored_after_final frames_returned=20 if=masked scheduler=off callgate=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-K suspend/resume self-test: passed first_frame=top_minus_160 second_frame=top_minus_320 resume_rip=0x50003000000d final_rip=0x50003000000f marker=once final_cr3=kernel bootstrap_rsp0=restored_after_final frames_returned=10 if=masked scheduler=off callgate=off" selftest-boot-serial.log

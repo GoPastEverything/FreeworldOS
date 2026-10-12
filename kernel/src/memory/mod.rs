@@ -52,6 +52,20 @@ impl ProcessAddressSpace {
         crate::arch::memory::map_adjacent_inactive_stack_leaf(self.root_frame, leaf)
     }
 
+    #[cfg(feature = "m5n-ci-self-test")]
+    pub fn map_test_callgate(&mut self) -> Result<(), MemoryError> {
+        let leaf = self.user_leaf.as_mut().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::map_test_callgate(self.root_frame, leaf)
+    }
+
+    #[cfg(feature = "m5n-ci-self-test")]
+    pub fn ci_callgate_proof(&self, bottom: u64, top: u64)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_callgate_proof(self.root_frame, leaf, bottom, top)
+    }
+
     #[cfg(feature = "m5h-ci-self-test")]
     pub fn ci_stack_push(&self) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
         let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;

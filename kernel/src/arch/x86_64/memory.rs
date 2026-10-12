@@ -722,6 +722,8 @@ pub use process_leaf::ci_process_suspend_resume;
 pub use process_leaf::ci_process_suspend_a_b_a;
 #[cfg(feature = "m5m-ci-self-test")]
 pub use process_leaf::{ci_stage_explicit_queue, ci_check_explicit_queue_marker};
+#[cfg(feature = "m5n-ci-self-test")]
+pub use process_leaf::{map_test_callgate, ci_callgate_proof};
 #[cfg(feature = "m5l-ci-self-test")]
 pub use process_leaf::ci_process_stack_push_as_b;
 

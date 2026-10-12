@@ -11,6 +11,8 @@ pub struct InactiveUserLeaf {
     l1: PhysFrame,
     leaf_flags: PageTableFlags,
     stack_frame: Option<PhysFrame>,
+    #[cfg(feature = "m5n-ci-self-test")]
+    gate_frame: Option<PhysFrame>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +136,8 @@ pub fn map_one_inactive_user_leaf(
             l1,
             leaf_flags: flags,
             stack_frame: None,
+            #[cfg(feature = "m5n-ci-self-test")]
+            gate_frame: None,
         })
     })?
 }
@@ -172,6 +176,81 @@ pub fn map_adjacent_inactive_stack_leaf(
         mapping.stack_frame = Some(frame);
         Ok(())
     })?
+}
+
+// M5-N: the physical page is allocator-owned by the kernel. The process
+// receives only an RX (never writable) alias in its existing user PML1.
+#[cfg(feature = "m5n-ci-self-test")]
+pub fn map_test_callgate(root: PhysFrame, mapping: &mut InactiveUserLeaf) -> Result<(), MemoryError> {
+    const GATE: u64 = 0x0000_5000_3000_2000;
+    if mapping.stack_frame.is_none() || mapping.gate_frame.is_some()
+        || mapping.virtual_address + PAGE_SIZE * 2 != GATE
+    { return Err(MemoryError::InvalidProcessUserPermissions); }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let t1 = unsafe { &mut *table_pointer(manager, mapping.l1.start) };
+        let idx = indices(GATE);
+        if !t1[idx[3]].is_unused() { return Err(MemoryError::ProcessUserLeafAlreadyMapped); }
+        let next = manager.allocator.next_frame().ok_or(MemoryError::OutOfFrames)?;
+        let frame = PhysFrame { start: next.start_address().as_u64() };
+        let ptr = manager.allocator.direct_map_pointer(frame.start);
+        unsafe { core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize) };
+        // The instruction page is populated exclusively via supervisor direct
+        // map and the process has no writable mapping of this frame.
+        unsafe {
+            core::ptr::write_volatile(ptr, 0xcd); // int 0xF2
+            core::ptr::write_volatile(ptr.add(1), 0xf2);
+            core::ptr::write_volatile(ptr.add(2), 0xc3); // ret
+            core::ptr::write_volatile(ptr.add(3), 0x0f); // ud2
+            core::ptr::write_volatile(ptr.add(4), 0x0b);
+        }
+        let flags = leaf_flags(PagePermissions::user_read_execute())?;
+        t1[idx[3]].set_addr(PhysAddr::new(frame.start), flags);
+        mapping.gate_frame = Some(frame);
+        Ok(())
+    })?
+}
+
+#[cfg(feature = "m5n-ci-self-test")]
+pub fn ci_callgate_proof(root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64)
+    -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+{
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.gate_frame.is_none() {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    let stack = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        // MOVABS RAX, USER_MARKER; CALL rel32 +0x1ff1;
+        // final test-only INT F2 and unreachable UD2.
+        const MARKER: u64 = crate::arch::process_ring3::USER_MARKER;
+        let bytes: [u8; 19] = [
+            0x48, 0xb8,
+            (MARKER >> 0) as u8, (MARKER >> 8) as u8,
+            (MARKER >> 16) as u8, (MARKER >> 24) as u8,
+            (MARKER >> 32) as u8, (MARKER >> 40) as u8,
+            (MARKER >> 48) as u8, (MARKER >> 56) as u8,
+            0xe8, 0xf1, 0x1f, 0, 0, 0xcd, 0xf2, 0x0f, 0x0b,
+        ];
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+        Ok(())
+    })??;
+    let proof = unsafe { crate::arch::process_ring3::ci_callgate_roundtrip(root.start, bottom, top) };
+    if proof.original_kernel_cr3 != proof.restored_kernel_cr3 ||
+       proof.observed_process_cr3 != root.start || proof.frame_address != top - 160
+    { return Err(MemoryError::ProcessUserLeafCorrupt); }
+    // One direct-map read after final kernel CR3 restoration. CALL pushed
+    // CODE+15; gate RET popped it, restoring the original user RSP.
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(stack.start);
+        let saved_return = unsafe { core::ptr::read_volatile(ptr.add(PAGE_SIZE as usize - 8) as *const u64) };
+        if saved_return != CODE + 15 { return Err(MemoryError::SelfTestDataMismatch); }
+        Ok(())
+    })??;
+    Ok(proof)
 }
 
 fn verify_chain(
@@ -226,11 +305,24 @@ fn verify_chain(
             return Err(MemoryError::ProcessUserLeafCorrupt);
         }
     }
+    #[cfg(feature = "m5n-ci-self-test")]
+    if let Some(gate) = mapping.gate_frame {
+        let entry = &t1[indices(mapping.virtual_address + PAGE_SIZE * 2)[3]];
+        let expected = leaf_flags(PagePermissions::user_read_execute())?;
+        if entry.addr().as_u64() != gate.start || (entry.flags() & !PageTableFlags::ACCESSED) != expected
+        { return Err(MemoryError::ProcessUserLeafCorrupt); }
+    }
     if (0..PML4_LOWER_HALF_ENTRIES)
         .any(|index| index != idx[0] && !pml4[index].is_unused())
         || (0..512).any(|index| index != idx[1] && !t3[index].is_unused())
         || (0..512).any(|index| index != idx[2] && !t2[index].is_unused())
-        || (0..512).any(|index| index != idx[3] && (mapping.stack_frame.is_none() || index != stack_idx) && !t1[index].is_unused())
+        || (0..512).any(|index| index != idx[3] && (mapping.stack_frame.is_none() || index != stack_idx)
+            && {
+                #[cfg(feature = "m5n-ci-self-test")]
+                { mapping.gate_frame.is_none() || index != indices(mapping.virtual_address + PAGE_SIZE * 2)[3] }
+                #[cfg(not(feature = "m5n-ci-self-test"))]
+                { true }
+            } && !t1[index].is_unused())
     {
         return Err(MemoryError::ProcessUserLeafCorrupt);
     }
@@ -271,10 +363,18 @@ pub fn destroy_inactive_user_leaf(
         if mapping.stack_frame.is_some() {
             t1[indices(mapping.virtual_address + PAGE_SIZE)[3]].set_unused();
         }
+        #[cfg(feature = "m5n-ci-self-test")]
+        if mapping.gate_frame.is_some() {
+            t1[indices(mapping.virtual_address + PAGE_SIZE * 2)[3]].set_unused();
+        }
         pml4[idx[0]].set_unused();
 
         if let Some(stack) = mapping.stack_frame {
             manager.allocator.release_frame(stack)?;
+        }
+        #[cfg(feature = "m5n-ci-self-test")]
+        if let Some(gate) = mapping.gate_frame {
+            manager.allocator.release_frame(gate)?;
         }
         for frame in [mapping.data_frame, mapping.l1, mapping.l2, mapping.l3] {
             manager.allocator.release_frame(frame)?;

@@ -229,6 +229,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::explicit_two_slot_queue_ci_self_test,
         );
     }
+    #[cfg(feature = "m5n-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5n.kernel_owned_callgate",
+            object::test_kernel_owned_callgate_ci_self_test,
+        );
+    }
 
     #[cfg(feature = "m3-ci-self-test")]
     {
