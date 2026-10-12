@@ -718,6 +718,8 @@ pub use process_leaf::{map_adjacent_inactive_stack_leaf, ci_process_stack_push};
 pub use process_leaf::ci_process_stack_push_private;
 #[cfg(feature = "m5k-ci-self-test")]
 pub use process_leaf::ci_process_suspend_resume;
+#[cfg(feature = "m5l-ci-self-test")]
+pub use process_leaf::ci_process_suspend_a_b_a;
 
 const PML4_ENTRY_COUNT: usize = 512;
 const PML4_LOWER_HALF_ENTRIES: usize = 256;
