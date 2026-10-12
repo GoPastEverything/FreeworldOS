@@ -334,8 +334,8 @@ pub unsafe fn ci_syscall_sysret(root: u64, bottom: u64, top: u64) -> Ring3Proces
     x86_64::instructions::interrupts::without_interrupts(|| {
         assert!(!super::interrupts_enabled());
         unsafe { configure_m5o_syscall(); }
-        m5o_write(core::ptr::addr_of_mut!(__freeworld_m5o_kernel_top), top);
-        m5o_write(core::ptr::addr_of_mut!(__freeworld_m5o_seen), 0);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_kernel_top) as *mut u64, top);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_seen) as *mut u64, 0);
         let previous_rsp0 = gdt::read_rsp0();
         unsafe { gdt::write_rsp0(top); }
         PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
