@@ -738,6 +738,8 @@ pub use process_leaf::ci_unmapped_then_hello_proof;
 pub use process_leaf::ci_copy_active_user;
 #[cfg(feature = "m5t-ci-self-test")]
 pub use process_leaf::ci_page_walk_then_hello_proof;
+#[cfg(feature = "m5u-ci-self-test")]
+pub use process_leaf::{ci_cross_page_hello_proof, ci_copy_two_user_pages};
 #[cfg(feature = "m5l-ci-self-test")]
 pub use process_leaf::ci_process_stack_push_as_b;
 
