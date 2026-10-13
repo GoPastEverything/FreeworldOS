@@ -288,14 +288,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
-    #[cfg(feature = "m5w-ci-self-test")]
-    {
-        debug::selftest::run_infallible(
-            "m5w.smep_smap",
-            arch::m5w_enable_protections_ci,
-        );
-    }
-
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(
@@ -400,6 +392,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
         panic!("M3.5-B fatal test unexpectedly returned");
     }
+
+    // Kernel bootstrap self-tests may intentionally access U/S=1 virtual
+    // addresses. Enable protections before the default scheduler, in every
+    // build, after those tests have completed.
+    #[cfg(feature = "m5w-ci-self-test")]
+    debug::selftest::run_infallible("m5w.smep_smap", arch::enable_user_protections);
+    #[cfg(not(feature = "m5w-ci-self-test"))]
+    arch::enable_user_protections();
 
     vfs::init();
 

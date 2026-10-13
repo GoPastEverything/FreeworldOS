@@ -986,7 +986,9 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
         return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
     }
     let mut copy = [0u8; 20];
-    unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, copy.as_mut_ptr(), copy.len()); }
+    if super::memory::ci_copy_active_user(ptr, &mut copy).is_err() {
+        return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
+    }
     if copy != *M5R_TEXT { return fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED); }
     serial::println(core::str::from_utf8(&copy).expect("validated ASCII FreeWorld text"));
     len
