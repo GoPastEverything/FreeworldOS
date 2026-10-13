@@ -279,6 +279,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::test_page_walk_then_hello_ci_self_test,
         );
     }
+    #[cfg(feature = "m5u-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5u.cross_page_hello",
+            object::test_cross_page_hello_ci_self_test,
+        );
+    }
 
     #[cfg(feature = "m3-ci-self-test")]
     {
