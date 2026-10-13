@@ -240,6 +240,19 @@ extern "x86-interrupt" fn page_fault(
         .map(|address| address.as_u64())
         .unwrap_or(0);
 
+    #[cfg(feature = "m5x-return-fault-test")]
+    {
+        const TARGET: u64 = 0x0000_5000_3000_3000;
+        let from_user = stack_frame.code_segment.0 & 3 == 3;
+        if crate::arch::process_ring3::ci_m5x_fallback_seen()
+            && from_user && fault_address == TARGET
+            && stack_frame.instruction_pointer.as_u64() == TARGET
+            && error_code.bits() == 0x14
+        {
+            serial::println("FreeWorldOS: M5-X proven: saved_rcx=noncanonical sysret=skipped iretq=taken fault_cpl=3 pf_error=0x14 target=0x500030003000 scheduler=off timer_choice=off");
+            crate::arch::halt_loop();
+        }
+    }
     panic_dump::fatal_exception(
         events::PAGE_FAULT,
         "#PF page fault",

@@ -16,6 +16,10 @@ use x86_64::{
 use super::{gdt, interrupt_context, serial};
 
 pub const RETURN_VECTOR: u8 = 0xF2;
+#[cfg(feature = "m5x-return-fault-test")]
+pub fn ci_m5x_fallback_seen() -> bool {
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(__freeworld_m5x_fallback_seen)) == 1 }
+}
 #[cfg(feature = "m5o-ci-self-test")]
 pub const SYSCALL_STUB: [u8; 16] = [
     0x48, 0xb8,
@@ -319,6 +323,7 @@ __freeworld_m5p_number: .quad 0
 __freeworld_m5p_argument: .quad 0
 __freeworld_m5p_result: .quad 0
 __freeworld_m5s_bad_seen: .quad 0
+__freeworld_m5x_fallback_seen: .quad 0
 
     .section .text
     .global __freeworld_m5o_syscall_entry
@@ -328,6 +333,12 @@ __freeworld_m5o_syscall_entry:
     mov qword ptr [rip + __freeworld_m5o_user_rsp], rsp
     mov rsp, qword ptr [rip + __freeworld_m5o_kernel_top]
     mov qword ptr [rip + __freeworld_m5o_return_rcx], rcx
+    .if {fault_probe}
+        // Dedicated M5-X image: corrupt the *saved* return RCX,
+        // not the architectural RCX that SYSCALL just wrote.
+        movabs rdx, 0x0000800000000000
+        mov qword ptr [rip + __freeworld_m5o_return_rcx], rdx
+    .endif
     mov qword ptr [rip + __freeworld_m5o_return_r11], r11
     mov qword ptr [rip + __freeworld_m5o_observed_rax], rax
     mov rax, cr3
@@ -354,11 +365,33 @@ __freeworld_m5o_syscall_entry:
     mov qword ptr [rip + __freeworld_m5p_result], rax
 .Lm5p_dispatch_done:
     mov rcx, qword ptr [rip + __freeworld_m5o_return_rcx]
+    // A 4-level canonical address equals its own sign extension from bit 47.
+    // This validation is done on the KERNEL stack, before restoring user RSP.
+    mov rdx, rcx
+    shl rdx, 16
+    sar rdx, 16
+    cmp rdx, rcx
+    jne .Lm5x_unsafe_return
     mov r11, qword ptr [rip + __freeworld_m5o_return_r11]
     mov rsp, qword ptr [rip + __freeworld_m5o_user_rsp]
     sysretq
     ud2
-"#);
+.Lm5x_unsafe_return:
+    // Never feed the noncanonical return to SYSRET. Instead enter ring 3
+    // using IRETQ at a canonical unmapped instruction pointer. The resulting
+    // user-mode instruction-fetch #PF is observed by the test handler.
+    mov qword ptr [rip + __freeworld_m5x_fallback_seen], 1
+    mov r11, qword ptr [rip + __freeworld_m5o_return_r11]
+    push 0x1b
+    push qword ptr [rip + __freeworld_m5o_user_rsp]
+    or r11, 2
+    push r11
+    push 0x23
+    movabs rdx, 0x0000500030003000
+    push rdx
+    iretq
+    ud2
+"#, fault_probe = const cfg!(feature = "m5x-return-fault-test") as usize);
 
 #[cfg(feature = "m5o-ci-self-test")]
 unsafe extern "C" {
@@ -374,6 +407,7 @@ unsafe extern "C" {
     static __freeworld_m5p_argument: u64;
     static __freeworld_m5p_result: u64;
     static __freeworld_m5s_bad_seen: u64;
+    static __freeworld_m5x_fallback_seen: u64;
 }
 
 #[cfg(feature = "m5o-ci-self-test")]
@@ -472,6 +506,8 @@ pub unsafe fn ci_syscall_sysret(root: u64, bottom: u64, top: u64) -> Ring3Proces
         PRIVATE_STACK_TOP.store(top, Ordering::Release);
         PRIVATE_STACK_MODE.store(true, Ordering::Release);
         M5O_MODE.store(true, Ordering::Release);
+        #[cfg(feature = "m5x-return-fault-test")]
+        serial::println("FreeWorldOS: M5-X corrupt_saved_rcx=0x800000000000 expected=iretq no_sysret=yes");
         let proof = unsafe { enter_mode(root, CODE, USER_TOP, false) };
         M5O_MODE.store(false, Ordering::Release);
         assert_eq!(proof.frame_address, top - FRAME_SIZE as u64);
