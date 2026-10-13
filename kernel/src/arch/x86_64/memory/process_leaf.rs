@@ -307,6 +307,39 @@ pub fn ci_page_walk_then_hello_proof(
 }
 
 
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn ci_cross_page_hello_proof(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
+    bytes: &[u8],
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    let elf = crate::exec::freeworld_elf::validate(bytes)
+        .map_err(|_| MemoryError::InvalidProcessUserPermissions)?;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none()
+        || elf.entry != CODE || elf.code.len() != 4096+12
+    { return Err(MemoryError::InvalidProcessUserPermissions); }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+            core::ptr::copy_nonoverlapping(elf.code.as_ptr(), ptr, 4096);
+            let stack = mapping.stack_frame.ok_or(MemoryError::InvalidProcessUserPermissions)?;
+            let ptr2 = manager.allocator.direct_map_pointer(stack.start);
+            core::ptr::copy_nonoverlapping(elf.code.as_ptr().add(4096), ptr2, 12);
+        }
+        Ok(())
+    })??;
+    let proof = unsafe { crate::arch::process_ring3::ci_cross_page_hello(root.start, bottom, top) };
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address != top - 160
+    { return Err(MemoryError::ProcessUserLeafCorrupt); }
+    with_manager(|manager| { verify_chain(manager, root, mapping) })??;
+    Ok(proof)
+}
+
+
 #[cfg(feature = "m5s-ci-self-test")]
 pub fn ci_unmapped_then_hello_proof(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
