@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test,m5l-ci-self-test,m5m-ci-self-test,m5n-ci-self-test,m5o-ci-self-test,m5p-ci-self-test,m5q-ci-self-test,m5r-ci-self-test,m5s-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test,m5l-ci-self-test,m5m-ci-self-test,m5n-ci-self-test,m5o-ci-self-test,m5p-ci-self-test,m5q-ci-self-test,m5r-ci-self-test,m5s-ci-self-test,m5t-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -287,6 +287,8 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5q.freeworld_elf" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5r.hello_from_freeworld" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5s.unmapped_then_hello" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5t.page_walk_then_hello" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-T page-table walk: passed bad_ptr=0x500030003000 error=-14 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-S unmapped pointer: passed bad_ptr=0x500030003000 error=-14 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off" selftest-boot-serial.log
           grep -Fq "hello from FreeWorld" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-R sentence syscall: passed note=FreeWorldOS abi=1 syscall=2 pointer=0x500030000080 length=20 user_checked=20 user_rsp=unchanged msrs=restored bootstrap_rsp0=restored frames_returned=10 if=masked scheduler=off timer_choice=off" selftest-boot-serial.log

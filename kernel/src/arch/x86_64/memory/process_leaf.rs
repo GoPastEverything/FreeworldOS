@@ -211,6 +211,65 @@ pub fn map_test_callgate(root: PhysFrame, mapping: &mut InactiveUserLeaf) -> Res
     })?
 }
 
+/// M5-T controlled user-copy: walk the currently active process CR3.
+/// Do not dereference a userspace virtual address until all four entries have
+/// been checked for PRESENT and USER_ACCESSIBLE. Only 4-KiB leaves supported.
+#[cfg(feature = "m5t-ci-self-test")]
+pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
+    if output.is_empty() || output.len() > 20 { return Err(()); }
+    let len = output.len() as u64;
+    let end = ptr.checked_add(len).ok_or(())?;
+    if ptr >= 0x0000_8000_0000_0000 || end > 0x0000_8000_0000_0000
+        || (ptr & 4095) + len > 4096 { return Err(()); }
+    let (cr3, _) = Cr3::read();
+    with_manager(|manager| {
+        let mut table_phys = cr3.start_address().as_u64();
+        for shift in [39, 30, 21, 12] {
+            let table = unsafe { &*table_pointer(manager, table_phys) };
+            let entry = &table[((ptr >> shift) & 511) as usize];
+            let flags = entry.flags();
+            if !flags.contains(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE)
+                || flags.contains(PageTableFlags::HUGE_PAGE) { return Err(()); }
+            table_phys = entry.addr().as_u64();
+        }
+        // Read the validated physical frame only through supervisor direct map.
+        let phys = table_phys.checked_add(ptr & 4095).ok_or(())?;
+        let src = manager.allocator.direct_map_pointer(phys) as *const u8;
+        unsafe { core::ptr::copy_nonoverlapping(src, output.as_mut_ptr(), output.len()); }
+        Ok(())
+    }).map_err(|_| ())?
+}
+
+#[cfg(feature = "m5t-ci-self-test")]
+pub fn ci_page_walk_then_hello_proof(
+    root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
+    bytes: &[u8],
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    let elf = crate::exec::freeworld_elf::validate(bytes)
+        .map_err(|_| MemoryError::InvalidProcessUserPermissions)?;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none()
+        || elf.entry != CODE || elf.code.len() != 0x80+20
+    { return Err(MemoryError::InvalidProcessUserPermissions); }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+            core::ptr::copy_nonoverlapping(elf.code.as_ptr(), ptr, elf.code.len());
+        }
+        Ok(())
+    })??;
+    let proof = unsafe { crate::arch::process_ring3::ci_page_walk_then_hello(root.start, bottom, top) };
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.frame_address != top - 160
+    { return Err(MemoryError::ProcessUserLeafCorrupt); }
+    with_manager(|manager| { verify_chain(manager, root, mapping) })??;
+    Ok(proof)
+}
+
+
 #[cfg(feature = "m5s-ci-self-test")]
 pub fn ci_unmapped_then_hello_proof(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,
