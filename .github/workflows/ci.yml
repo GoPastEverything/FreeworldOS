@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           cargo build --features m5w-smap-fault-test
           BIOS_IMAGE="$(
-            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\\n' \\
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
               | sort -nr | head -n 1 | cut -d' ' -f2-
           )"
           test -n "$BIOS_IMAGE"
@@ -382,9 +382,9 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          timeout --signal=TERM --kill-after=2s 8s qemu-system-x86_64 \\
-            -drive "format=raw,file=target/ci/freeworldos-m5w-smap-fault-bios.img" \\
-            -serial stdio -display none -no-reboot -no-shutdown -m 256M \\
+          timeout --signal=TERM --kill-after=2s 8s qemu-system-x86_64 \
+            -drive "format=raw,file=target/ci/freeworldos-m5w-smap-fault-bios.img" \
+            -serial stdio -display none -no-reboot -no-shutdown -m 256M \
             > m5w-smap-fault-serial.log 2>&1
           QEMU_STATUS=$?
           set -e
