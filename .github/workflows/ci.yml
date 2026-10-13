@@ -39,6 +39,18 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-selftest-bios.img
 
+      - name: Build M5-W deliberate SMAP fault image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m5w-smap-fault-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\\n' \\
+              | sort -nr | head -n 1 | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-m5w-smap-fault-bios.img
+
       - name: Build panic-test kernel image
         shell: bash
         run: |
@@ -364,6 +376,26 @@ jobs:
             exit "$QEMU_STATUS"
           fi
 
+
+      - name: Boot deliberate M5-W SMAP fault and verify protection
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s qemu-system-x86_64 \\
+            -drive "format=raw,file=target/ci/freeworldos-m5w-smap-fault-bios.img" \\
+            -serial stdio -display none -no-reboot -no-shutdown -m 256M \\
+            > m5w-smap-fault-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+          cat m5w-smap-fault-serial.log
+          grep -Fq "FreeWorldOS: M5-W protection flags: smep=1 smap=1 cpuid=verified" m5w-smap-fault-serial.log
+          grep -Fq "FreeWorldOS: M5-W deliberate supervisor user virtual read: expect_smap_fault=yes address=0x600010000000" m5w-smap-fault-serial.log
+          grep -Fq "FreeWorldOS: EXCEPTION: #PF page fault" m5w-smap-fault-serial.log
+          grep -Fq "error=0x1" m5w-smap-fault-serial.log
+          grep -Fq "fault=0x600010000000" m5w-smap-fault-serial.log
+          if grep -Fq "SMAP missing" m5w-smap-fault-serial.log; then exit 1; fi
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then exit "$QEMU_STATUS"; fi
 
       - name: Boot deliberate panic image and verify fixed diagnostics
         shell: bash
