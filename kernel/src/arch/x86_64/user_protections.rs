@@ -4,21 +4,24 @@ use core::arch::x86_64::__cpuid_count;
 use x86_64::registers::control::{Cr4, Cr4Flags};
 
 pub fn enable_and_assert() {
-    assert!(!super::interrupts_enabled(), "M5-W requires IF clear");
-    let leaf = unsafe { __cpuid_count(7, 0) };
-    assert_ne!(leaf.ebx & (1 << 7), 0, "M5-W host lacks SMEP");
-    assert_ne!(leaf.ebx & (1 << 20), 0, "M5-W host lacks SMAP");
-    let before = Cr4::read();
-    // SAFETY: both CPUID capabilities were proved, and all intervening
-    // kernel bootstrap tests requiring supervisor user-alias access are done.
-    unsafe { Cr4::write(before | Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION
-        | Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION); }
-    let after = Cr4::read();
-    assert!(after.contains(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION));
-    assert!(after.contains(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION));
-    super::serial::println("FreeWorldOS: M5-W protection flags: smep=1 smap=1 cpuid=verified");
-    #[cfg(feature = "m5w-smap-fault-test")]
-    ci_trigger_smap_fault();
+    // Other bootstrap tests can leave IF set. Quiesce delivery during the
+    // CPU-local CR4 transition and restore the original IF on return.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let leaf = unsafe { __cpuid_count(7, 0) };
+        assert_ne!(leaf.ebx & (1 << 7), 0, "M5-W host lacks SMEP");
+        assert_ne!(leaf.ebx & (1 << 20), 0, "M5-W host lacks SMAP");
+        let before = Cr4::read();
+        unsafe {
+            Cr4::write(before | Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION
+                | Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION);
+        }
+        let after = Cr4::read();
+        assert!(after.contains(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION));
+        assert!(after.contains(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION));
+        super::serial::println("FreeWorldOS: M5-W protection flags: smep=1 smap=1 cpuid=verified");
+        #[cfg(feature = "m5w-smap-fault-test")]
+        ci_trigger_smap_fault();
+    });
 }
 
 #[cfg(feature = "m5w-smap-fault-test")]
