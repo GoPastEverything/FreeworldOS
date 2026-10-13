@@ -106,24 +106,24 @@ static M5U_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5u-ci-self-test")]
 static M5U_EXPECT_SUCCESS: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5u-ci-self-test")]
-pub const M5U_CODE: [u8; 32] = [
+pub const M5U_CODE: [u8; 33] = [
     0xb8, 2, 0, 0, 0,
     0x48, 0xbf, 0xf8, 0x0f, 0, 0x30, 0, 0x50, 0, 0,
     0xbe, 20, 0, 0, 0,
     0x0f, 0x05,
-    0x48, 0x83, 0xf8, 20,
+    0x3d, 20, 0, 0, 0, // cmp eax, signed 32-bit result
     0x75, 0x02,
     0xcd, 0xf2,
     0x0f, 0x0b,
 ];
 #[cfg(feature = "m5s-ci-self-test")]
-pub const M5S_CODE: [u8; 60] = [
+pub const M5S_CODE: [u8; 61] = [
     0xb8, 2, 0, 0, 0, // eax=2
     0x48, 0xbf, 0, 0x30, 0, 0x30, 0, 0x50, 0, 0, // rdi=0x500030003000 (unmapped)
     0xbe, 20, 0, 0, 0, // esi=20
-    0x0f, 0x05, // syscall, return -EFAULT
-    0x48, 0x83, 0xf8, 0xf2, // cmp rax, -14
-    0x75, 0x1e, // jne final UD2 at offset 58
+    0x0f, 0x05, // syscall, return native FW_ERR_USER_ADDRESS
+    0x3d, 0xff, 0xdf, 0xff, 0xff, // cmp eax, -8193
+    0x75, 0x1e, // jne final UD2 at offset 59
     0xb8, 2, 0, 0, 0, // eax=2
     0x48, 0xbf, 0x80, 0, 0, 0x30, 0, 0x50, 0, 0, // rdi=0x500030000080
     0xbe, 20, 0, 0, 0, // esi=20
@@ -349,7 +349,7 @@ __freeworld_m5o_syscall_entry:
     call __freeworld_m5r_print
     jmp .Lm5p_record_result
 .Lm5p_unsupported:
-    mov rax, -38
+    mov rax, -4098 // FW_ERR_NO_SUCH_CALL
 .Lm5p_record_result:
     mov qword ptr [rip + __freeworld_m5p_result], rax
 .Lm5p_dispatch_done:
@@ -942,17 +942,17 @@ fn M5R_MODE_ACTIVE() -> bool {
 #[unsafe(no_mangle)]
 extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
     #[cfg(not(feature = "m5r-ci-self-test"))]
-    { let _ = (ptr, len); return u64::MAX - 37; }
+    { let _ = (ptr, len); return fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL); }
     #[cfg(feature = "m5r-ci-self-test")]
     {
     #[cfg(feature = "m5u-ci-self-test")]
     if M5U_MODE.load(Ordering::Acquire) {
         let mut bytes = [0u8; 20];
-        if len != 20 { return u64::MAX - 13; }
+        if len != 20 { return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS); }
         if super::memory::ci_copy_active_user(ptr, &mut bytes).is_err() {
-            return u64::MAX - 13;
+            return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
         }
-        if bytes != *M5R_TEXT { return u64::MAX - 21; }
+        if bytes != *M5R_TEXT { return fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED); }
         serial::println(core::str::from_utf8(&bytes).expect("ASCII text"));
         return len;
     }
@@ -960,21 +960,21 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
     if M5T_MODE.load(Ordering::Acquire) {
         let mut bytes = [0u8; 20];
         if len != bytes.len() as u64 {
-            return u64::MAX - 13;
+            return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
         }
         if super::memory::ci_copy_active_user(ptr, &mut bytes).is_err() {
             unsafe { core::ptr::write_volatile(
                 core::ptr::addr_of!(__freeworld_m5s_bad_seen) as *mut u64, 1) };
-            return u64::MAX - 13;
+            return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
         }
-        if bytes != *M5R_TEXT { return u64::MAX - 21; }
+        if bytes != *M5R_TEXT { return fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED); }
         serial::println(core::str::from_utf8(&bytes).expect("ASCII text"));
         return len;
     }
     const BASE: u64 = 0x0000_5000_3000_0000;
     // Test-only range: the string must be in this process's existing U+RX
     // code leaf. No unbounded user-pointer dereference is permitted.
-    let Some(end) = ptr.checked_add(len) else { return u64::MAX - 13 };
+    let Some(end) = ptr.checked_add(len) else { return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS) };
     if len != M5R_TEXT.len() as u64 || ptr != BASE + 0x80
         || end > BASE + 4096 {
         #[cfg(feature = "m5s-ci-self-test")]
@@ -982,11 +982,11 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
             unsafe { core::ptr::write_volatile(
                 core::ptr::addr_of!(__freeworld_m5s_bad_seen) as *mut u64, 1) };
         }
-        return u64::MAX - 13;
+        return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
     }
     let mut copy = [0u8; 20];
     unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, copy.as_mut_ptr(), copy.len()); }
-    if copy != *M5R_TEXT { return u64::MAX - 21; }
+    if copy != *M5R_TEXT { return fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED); }
     serial::println(core::str::from_utf8(&copy).expect("validated ASCII FreeWorld text"));
     len
     }
@@ -1021,7 +1021,7 @@ pub unsafe fn ci_unmapped_then_hello(root: u64, bottom: u64, top: u64) -> Ring3P
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5s_bad_seen)), 1);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)), 1);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_user_rsp)), USER_RSP);
-        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 50);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 51);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_number)), 2);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_result)), 20);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_observed_cr3)) & !0xfff, root);
@@ -1032,7 +1032,7 @@ pub unsafe fn ci_unmapped_then_hello(root: u64, bottom: u64, top: u64) -> Ring3P
         unsafe { restore_syscall_msrs(msrs); }
         assert_eq!(gdt::read_rsp0(), bootstrap);
         assert!(!super::interrupts_enabled());
-        serial::println("FreeWorldOS: M5-S invalid-pointer syscall: passed bad_ptr=0x500030003000 bad_result=-14 bad_no_fault=yes good_ptr=0x500030000080 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
+        serial::println("FreeWorldOS: M5-S invalid-pointer syscall: passed bad_ptr=0x500030003000 bad_result=-8193 bad_no_fault=yes good_ptr=0x500030000080 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
         proof
     })
 }
@@ -1071,7 +1071,7 @@ pub unsafe fn ci_cross_page_syscall(
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_user_rsp)), USER_RSP);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 22);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_number)), 2);
-        let expected = if expect_success { 20 } else { u64::MAX - 13 };
+        let expected = if expect_success { 20 } else { fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS) };
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_result)), expected);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_observed_cr3)) & !0xfff, root);
         let copied = super::memory::ci_user_copy_count();
@@ -1086,7 +1086,7 @@ pub unsafe fn ci_cross_page_syscall(
         serial::write_fmt(format_args!(
             "FreeWorldOS: M5-U syscall: ptr={:#x} result={} copied={} user_rsp={USER_RSP:#x} cr3=restored msrs=restored rsp0=restored\n",
             m5o_read(core::ptr::addr_of!(__freeworld_m5p_argument)),
-            if expect_success { 20i64 } else { -14i64 }, copied,
+            if expect_success { 20i64 } else { fw_abi::FW_ERR_USER_ADDRESS as i64 }, copied,
         ));
         proof
     })
@@ -1123,7 +1123,7 @@ pub unsafe fn ci_page_walk_then_hello(root: u64, bottom: u64, top: u64) -> Ring3
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5s_bad_seen)), 1);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)), 1);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_user_rsp)), USER_RSP);
-        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 50);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 51);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_number)), 2);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_result)), 20);
         assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_observed_cr3)) & !0xfff, root);
@@ -1134,7 +1134,7 @@ pub unsafe fn ci_page_walk_then_hello(root: u64, bottom: u64, top: u64) -> Ring3
         unsafe { restore_syscall_msrs(msrs); }
         assert_eq!(gdt::read_rsp0(), bootstrap);
         assert!(!super::interrupts_enabled());
-        serial::println("FreeWorldOS: M5-T page-walk syscall: passed bad_ptr=0x500030003000 bad_result=-14 bad_no_fault=yes translation=page_tables good_ptr=0x500030000080 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
+        serial::println("FreeWorldOS: M5-T page-walk syscall: passed bad_ptr=0x500030003000 bad_result=-8193 bad_no_fault=yes translation=page_tables good_ptr=0x500030000080 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
         proof
     })
 }
@@ -1239,7 +1239,7 @@ unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bo
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
     EXPECTED_RIP.store(user_rip + if push_mode { PUSH_RETURN_RIP_OFFSET } else {
         #[cfg(feature = "m5o-ci-self-test")]
-        { if M5U_MODE_ACTIVE() { 30 } else if M5S_MODE_ACTIVE() { 58 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
+        { if M5U_MODE_ACTIVE() { 31 } else if M5S_MODE_ACTIVE() { 59 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
         #[cfg(not(feature = "m5o-ci-self-test"))]
         { RETURN_RIP_OFFSET }
     }, Ordering::Release);
@@ -1339,7 +1339,7 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
         if M5R_MODE.load(Ordering::Acquire) {
             #[cfg(feature = "m5u-ci-self-test")]
             if M5U_MODE_ACTIVE() && !M5U_EXPECT_SUCCESS.load(Ordering::Acquire) {
-                assert_eq!(frame.rax, u64::MAX - 13);
+                assert_eq!(frame.rax, fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS));
             } else {
                 assert_eq!(frame.rax, M5R_TEXT.len() as u64);
             }

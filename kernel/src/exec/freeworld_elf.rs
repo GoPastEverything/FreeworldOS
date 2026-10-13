@@ -101,7 +101,7 @@ pub fn invalid_then_hello_image() -> [u8; HELLO_IMAGE_BYTES] {
 pub const M5U_IMAGE_BYTES: usize = CODE_AT + 4096;
 
 #[cfg(feature = "m5u-ci-self-test")]
-pub fn cross_page_image(pointer: u64, expected: i8) -> [u8; M5U_IMAGE_BYTES] {
+pub fn cross_page_image(pointer: u64, expected: i32) -> [u8; M5U_IMAGE_BYTES] {
     let original = test_image(1);
     let mut image = [0u8; M5U_IMAGE_BYTES];
     image[..CODE_AT].copy_from_slice(&original[..CODE_AT]);
@@ -109,7 +109,7 @@ pub fn cross_page_image(pointer: u64, expected: i8) -> [u8; M5U_IMAGE_BYTES] {
     put64(&mut image, HEADER + 40, 4096);
     let mut stub = crate::arch::process_ring3::M5U_CODE;
     stub[7..15].copy_from_slice(&pointer.to_le_bytes());
-    stub[25] = expected as u8;
+    stub[23..27].copy_from_slice(&expected.to_le_bytes());
     image[CODE_AT..CODE_AT + stub.len()].copy_from_slice(&stub);
     image[CODE_AT + 4096 - 8..CODE_AT + 4096]
         .copy_from_slice(&crate::arch::process_ring3::M5R_TEXT[..8]);
