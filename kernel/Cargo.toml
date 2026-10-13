@@ -52,8 +52,10 @@ m5r-ci-self-test = ["m5q-ci-self-test"]
 m5s-ci-self-test = ["m5r-ci-self-test"]
 m5t-ci-self-test = ["m5s-ci-self-test"]
 m5u-ci-self-test = ["m5t-ci-self-test"]
+m5v-ci-self-test = ["m5u-ci-self-test"]
 
 [dependencies]
+fw-abi = { path = "../fw-abi" }
 bootloader_api = "=0.11.17"
 lazy_static = { version = "=1.5.0", features = ["spin_no_std"] }
 x86_64 = { version = "=0.15.5", features = ["abi_x86_interrupt"] }

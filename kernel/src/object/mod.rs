@@ -1629,7 +1629,7 @@ pub fn test_unmapped_then_hello_ci_self_test() -> Result<(), ObjectError> {
         return Err(ObjectError::SelfTestFailed);
     }
     crate::arch::serial::println(
-        "FreeWorldOS: M5-S unmapped pointer: passed bad_ptr=0x500030003000 error=-14 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off",
+        "FreeWorldOS: M5-S unmapped pointer: passed bad_ptr=0x500030003000 error=-8193 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off",
     );
     Ok(())
 }
@@ -1650,12 +1650,12 @@ pub fn test_cross_page_copy_ci_self_test() -> Result<(), ObjectError> {
     let bootstrap = crate::arch::current_tss_rsp0();
     let mut process = ProcessObject::new_with_private_kernel_stack(profile)?;
     process.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
-    let bad_second = crate::exec::freeworld_elf::cross_page_image(CODE + 4096 - 8, -14);
+    let bad_second = crate::exec::freeworld_elf::cross_page_image(CODE + 4096 - 8, fw_abi::FW_ERR_USER_ADDRESS);
     let first = process.ci_cross_page(&bad_second, false)?;
     if first.original_kernel_cr3 != first.restored_kernel_cr3
         || crate::arch::memory::ci_user_copy_count() != 0
     { return Err(ObjectError::SelfTestFailed); }
-    crate::arch::serial::println("FreeWorldOS: M5-U second-unmapped: result=-14 copied=0");
+    crate::arch::serial::println("FreeWorldOS: M5-U second-unmapped: result=-8193 copied=0");
     // Same process: install only the adjacent writable page, no scheduling.
     process.map_adjacent_user_stack()?;
     let good = crate::exec::freeworld_elf::cross_page_image(CODE + 4096 - 8, 20);
@@ -1665,7 +1665,7 @@ pub fn test_cross_page_copy_ci_self_test() -> Result<(), ObjectError> {
     { return Err(ObjectError::SelfTestFailed); }
     crate::arch::serial::println("FreeWorldOS: M5-U two-page success: segments=8+12 copied=20");
     for bad_pointer in [CODE + 0x3000, u64::MAX - 7] {
-        let bad = crate::exec::freeworld_elf::cross_page_image(bad_pointer, -14);
+        let bad = crate::exec::freeworld_elf::cross_page_image(bad_pointer, fw_abi::FW_ERR_USER_ADDRESS);
         let proof = process.ci_cross_page(&bad, false)?;
         if proof.original_kernel_cr3 != proof.restored_kernel_cr3
             || crate::arch::memory::ci_user_copy_count() != 0
@@ -1676,7 +1676,7 @@ pub fn test_cross_page_copy_ci_self_test() -> Result<(), ObjectError> {
     if after.returned_total.saturating_sub(before.returned_total) != 10
         || process::live_count() != live_before || crate::arch::current_tss_rsp0() != bootstrap
     { return Err(ObjectError::SelfTestFailed); }
-    crate::arch::serial::println("FreeWorldOS: M5-U complete: second_unmapped=-14 first_unmapped=-14 overflow=-14 zero_copy_on_reject=yes frames_returned=10 scheduler=off timer_choice=off concurrent_unmap=unsupported");
+    crate::arch::serial::println("FreeWorldOS: M5-U complete: second_unmapped=-8193 first_unmapped=-8193 overflow=-8193 zero_copy_on_reject=yes frames_returned=10 scheduler=off timer_choice=off concurrent_unmap=unsupported");
     Ok(())
 }
 
@@ -1733,7 +1733,7 @@ pub fn test_page_walk_then_hello_ci_self_test() -> Result<(), ObjectError> {
         return Err(ObjectError::SelfTestFailed);
     }
     crate::arch::serial::println(
-        "FreeWorldOS: M5-T page-table walk: passed bad_ptr=0x500030003000 error=-14 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off",
+        "FreeWorldOS: M5-T page-table walk: passed bad_ptr=0x500030003000 error=-8193 without_fault=true good_ptr=0x500030000080 good_result=20 frames_returned=10 msrs=restored bootstrap_rsp0=restored scheduler=off timer_choice=off",
     );
     Ok(())
 }
