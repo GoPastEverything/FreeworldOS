@@ -65,23 +65,10 @@ fn ci_trigger_smep_fault() -> ! {
     let frame = memory::allocate_frame().expect("M5-W missing executable frame");
     unsafe { memory::map_page(USER, frame, PagePermissions::user_read_execute()) }
         .expect("M5-W failed to map executable user page");
-    // Return instruction staged in the user executable page through the
-    // always-supervisor physical direct map; avoid writing through U/S alias.
-    // Use a staging RW map only if mapping permissions are restored RX before
-    // the negative execution test.
-    let staged = memory::unmap_page(USER).expect("M5-W failed to unmap staging page");
-    assert_eq!(staged, frame);
-    unsafe { memory::map_page(USER, frame, PagePermissions::user_read_write()) }
-        .expect("M5-W failed to map writable staging page");
-    unsafe {
-        core::arch::asm!("stac", options(nomem, nostack, preserves_flags));
-        core::ptr::write_volatile(USER as *mut u8, 0xc3);
-        core::arch::asm!("clac", options(nomem, nostack, preserves_flags));
-    }
-    let staged = memory::unmap_page(USER).expect("M5-W failed to unmap staged code");
-    assert_eq!(staged, frame);
-    unsafe { memory::map_page(USER, frame, PagePermissions::user_read_execute()) }
-        .expect("M5-W failed to map final user executable page");
+    // Stage a RET through the kernel's supervisor-only physical direct map.
+    // The user mapping stays U+RX throughout; no writable alias is needed.
+    let direct = (crate::memory::address_space::BOOT_PHYSICAL_MEMORY_BASE + frame.start) as *mut u8;
+    unsafe { core::ptr::write_volatile(direct, 0xc3); }
     super::serial::println("FreeWorldOS: M5-W SMEP negative: cpl=0 target=user_rx expect_pf=0x11 address=0x600010000000");
     // SAFETY: intentionally executes a user RX page at CPL0, in a dedicated
     // fatal-image test. SMEP must fault before executing RET.

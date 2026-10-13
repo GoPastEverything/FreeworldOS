@@ -56,7 +56,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --features m5w-smep-fault-test
-          BIOS_IMAGE="$(find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-m5w-smep-fault-bios.img
 
@@ -241,6 +246,8 @@ jobs:
           grep -Fq "FreeWorldOS: M3.5-C2m task A: resumed b_exit=ok b_reclaimed=ok exit=begin" default-boot-serial.log
           test "$(grep -Fc "FreeWorldOS: scheduler idle reclaimed stopped_tasks=1" default-boot-serial.log)" -ge 1
           grep -Fq "FreeWorldOS: M3.5-C2m proof: spawn_api=ok tasks=2 timer_dispatch=ok interrupt_resume=ok exits=2 off_stack_reclaim=2 queue_empty=ok idle_resumed=ok priorities=off smp=off" default-boot-serial.log
+
+          grep -Fq "FreeWorldOS: M5-W protections: smep=1 smap=1 cpuid=checked" default-boot-serial.log
 
           if grep -Fq "KERNEL PANIC" default-boot-serial.log             || grep -Fq "FreeWorldOS: FATAL" default-boot-serial.log             || grep -Fq "FreeWorldOS: EXCEPTION:" default-boot-serial.log; then
             echo "unexpected panic or exception during default M1 boot" >&2
