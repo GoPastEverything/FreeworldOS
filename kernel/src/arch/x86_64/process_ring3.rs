@@ -99,6 +99,8 @@ static M5P_MODE: AtomicBool = AtomicBool::new(false);
 static M5R_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5s-ci-self-test")]
 static M5S_MODE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m5t-ci-self-test")]
+static M5T_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5s-ci-self-test")]
 pub const M5S_CODE: [u8; 60] = [
     0xb8, 2, 0, 0, 0, // eax=2
@@ -923,6 +925,21 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
     { let _ = (ptr, len); return u64::MAX - 37; }
     #[cfg(feature = "m5r-ci-self-test")]
     {
+    #[cfg(feature = "m5t-ci-self-test")]
+    if M5T_MODE.load(Ordering::Acquire) {
+        let mut bytes = [0u8; 20];
+        if len != bytes.len() as u64 {
+            return u64::MAX - 13;
+        }
+        if super::memory::ci_copy_active_user(ptr, &mut bytes).is_err() {
+            unsafe { core::ptr::write_volatile(
+                core::ptr::addr_of!(__freeworld_m5s_bad_seen) as *mut u64, 1) };
+            return u64::MAX - 13;
+        }
+        if bytes != *M5R_TEXT { return u64::MAX - 21; }
+        serial::println(core::str::from_utf8(&bytes).expect("ASCII text"));
+        return len;
+    }
     const BASE: u64 = 0x0000_5000_3000_0000;
     // Test-only range: the string must be in this process's existing U+RX
     // code leaf. No unbounded user-pointer dereference is permitted.
@@ -985,6 +1002,53 @@ pub unsafe fn ci_unmapped_then_hello(root: u64, bottom: u64, top: u64) -> Ring3P
         assert_eq!(gdt::read_rsp0(), bootstrap);
         assert!(!super::interrupts_enabled());
         serial::println("FreeWorldOS: M5-S invalid-pointer syscall: passed bad_ptr=0x500030003000 bad_result=-14 bad_no_fault=yes good_ptr=0x500030000080 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
+        proof
+    })
+}
+
+#[cfg(feature = "m5t-ci-self-test")]
+pub unsafe fn ci_page_walk_then_hello(root: u64, bottom: u64, top: u64) -> Ring3ProcessProof {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const USER_RSP: u64 = 0x0000_5000_3000_2000;
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let msrs = unsafe { snapshot_syscall_msrs() };
+        unsafe { configure_m5o_syscall(); }
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_kernel_top) as *mut u64, top);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_seen) as *mut u64, 0);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_dispatch_mode) as *mut u64, 1);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_result) as *mut u64, 0);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5s_bad_seen) as *mut u64, 0);
+        let bootstrap = gdt::read_rsp0();
+        unsafe { gdt::write_rsp0(top); }
+        PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+        PRIVATE_STACK_TOP.store(top, Ordering::Release);
+        PRIVATE_STACK_MODE.store(true, Ordering::Release);
+        M5P_MODE.store(true, Ordering::Release);
+        M5R_MODE.store(true, Ordering::Release);
+        M5S_MODE.store(true, Ordering::Release);
+        M5T_MODE.store(true, Ordering::Release);
+        let proof = unsafe { enter_mode(root, CODE, USER_RSP, false) };
+        M5T_MODE.store(false, Ordering::Release);
+        M5S_MODE.store(false, Ordering::Release);
+        M5R_MODE.store(false, Ordering::Release);
+        M5P_MODE.store(false, Ordering::Release);
+        assert_eq!(proof.frame_address, top - FRAME_SIZE as u64);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5s_bad_seen)), 1);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)), 1);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_user_rsp)), USER_RSP);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 50);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_number)), 2);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_result)), 20);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_observed_cr3)) & !0xfff, root);
+        assert_eq!(gdt::read_rsp0(), top);
+        unsafe { gdt::write_rsp0(bootstrap); }
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_dispatch_mode) as *mut u64, 0);
+        unsafe { restore_syscall_msrs(msrs); }
+        assert_eq!(gdt::read_rsp0(), bootstrap);
+        assert!(!super::interrupts_enabled());
+        serial::println("FreeWorldOS: M5-T page-walk syscall: passed bad_ptr=0x500030003000 bad_result=-14 bad_no_fault=yes translation=page_tables good_ptr=0x500030000080 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
         proof
     })
 }
