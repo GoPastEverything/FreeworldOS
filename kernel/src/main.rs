@@ -258,6 +258,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             object::test_freeworld_elf_ci_self_test,
         );
     }
+    // The controlled ring-3 syscall and user-copy proof suite runs with
+    // SMEP/SMAP already enabled. Earlier bootstrap tests may directly access
+    // U/S mappings and are left before this activation boundary.
+    #[cfg(feature = "m5w-ci-self-test")]
+    debug::selftest::run_infallible("m5w.smep_smap", arch::enable_user_protections);
+    #[cfg(not(feature = "m5w-ci-self-test"))]
+    arch::enable_user_protections();
+
     #[cfg(feature = "m5r-ci-self-test")]
     {
         debug::selftest::run_result(

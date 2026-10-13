@@ -446,8 +446,9 @@ unsafe fn configure_m5o_syscall() {
     unsafe {
         write_msr(0xc000_0081, star);
         write_msr(0xc000_0082, __freeworld_m5o_syscall_entry as usize as u64);
-        write_msr(0xc000_0084, (1 << 9) | (1 << 10) | (1 << 8));
+        write_msr(0xc000_0084, (1 << 18) | (1 << 9) | (1 << 10) | (1 << 8));
         write_msr(0xc000_0080, read_msr(0xc000_0080) | 1);
+        assert_ne!(read_msr(0xc000_0084) & (1 << 18), 0, "M5-W SFMASK must clear AC");
     }
 }
 
@@ -985,7 +986,9 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
         return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
     }
     let mut copy = [0u8; 20];
-    unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, copy.as_mut_ptr(), copy.len()); }
+    if super::memory::ci_copy_active_user(ptr, &mut copy).is_err() {
+        return fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS);
+    }
     if copy != *M5R_TEXT { return fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED); }
     serial::println(core::str::from_utf8(&copy).expect("validated ASCII FreeWorld text"));
     len
