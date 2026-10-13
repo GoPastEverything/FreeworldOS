@@ -65,6 +65,20 @@ jobs:
           test -n "$BIOS_IMAGE"
           cp "$BIOS_IMAGE" target/ci/freeworldos-m5w-smep-fault-bios.img
 
+      - name: Build M5-X invalid-return fault image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --features m5x-return-fault-test
+          BIOS_IMAGE="$(
+            find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$BIOS_IMAGE"
+          cp "$BIOS_IMAGE" target/ci/freeworldos-m5x-return-fault-bios.img
+
       - name: Build panic-test kernel image
         shell: bash
         run: |
@@ -426,6 +440,23 @@ jobs:
           grep -Fq "FreeWorldOS: M5-W SMEP negative: cpl=0 target=user_rx expect_pf=0x11 address=0x600010000000" m5w-smep-fault-serial.log
           grep -Eq "EXCEPTION: #PF page fault .*error=0x11 fault=0x600010000000" m5w-smep-fault-serial.log
           if grep -Fq "SMEP bypass" m5w-smep-fault-serial.log; then exit 1; fi
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then exit "$QEMU_STATUS"; fi
+
+      - name: Boot M5-X corrupted SYSRET address through safe IRETQ
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=TERM --kill-after=2s 8s qemu-system-x86_64 -cpu qemu64,+smep,+smap \
+            -drive "format=raw,file=target/ci/freeworldos-m5x-return-fault-bios.img" \
+            -serial stdio -display none -no-reboot -no-shutdown -m 256M \
+            > m5x-return-serial.log 2>&1
+          QEMU_STATUS=$?
+          set -e
+          cat m5x-return-serial.log
+          grep -Fq "FreeWorldOS: M5-X corrupt_saved_rcx=0x800000000000 expected=iretq no_sysret=yes" m5x-return-serial.log
+          grep -Fq "FreeWorldOS: M5-X proven: saved_rcx=noncanonical sysret=skipped iretq=taken fault_cpl=3 pf_error=0x14 target=0x500030003000 scheduler=off timer_choice=off" m5x-return-serial.log
+          if grep -Eq 'KERNEL PANIC|FreeWorldOS: FATAL' m5x-return-serial.log; then exit 1; fi
           if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then exit "$QEMU_STATUS"; fi
 
       - name: Boot deliberate panic image and verify fixed diagnostics
