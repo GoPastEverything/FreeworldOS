@@ -1634,6 +1634,52 @@ pub fn test_unmapped_then_hello_ci_self_test() -> Result<(), ObjectError> {
     Ok(())
 }
 
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn test_cross_page_copy_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld, image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64, architecture: Architecture::X86_64,
+    };
+    let before = crate::memory::frame_reuse_stats()?;
+    let live_before = process::live_count();
+    let bootstrap = crate::arch::current_tss_rsp0();
+    let mut process = ProcessObject::new_with_private_kernel_stack(profile)?;
+    process.map_one_user_leaf(CODE, PagePermissions::user_read_execute())?;
+    let bad_second = crate::exec::freeworld_elf::cross_page_image(CODE + 4096 - 8, -14);
+    let first = process.ci_cross_page(&bad_second, false)?;
+    if first.original_kernel_cr3 != first.restored_kernel_cr3
+        || crate::arch::memory::ci_user_copy_count() != 0
+    { return Err(ObjectError::SelfTestFailed); }
+    crate::arch::serial::println("FreeWorldOS: M5-U second-unmapped: result=-14 copied=0");
+    // Same process: install only the adjacent writable page, no scheduling.
+    process.map_adjacent_user_stack()?;
+    let good = crate::exec::freeworld_elf::cross_page_image(CODE + 4096 - 8, 20);
+    let success = process.ci_cross_page(&good, true)?;
+    if success.original_kernel_cr3 != success.restored_kernel_cr3
+        || crate::arch::memory::ci_user_copy_count() != 20
+    { return Err(ObjectError::SelfTestFailed); }
+    crate::arch::serial::println("FreeWorldOS: M5-U two-page success: segments=8+12 copied=20");
+    for bad_pointer in [CODE + 0x3000, u64::MAX - 7] {
+        let bad = crate::exec::freeworld_elf::cross_page_image(bad_pointer, -14);
+        let proof = process.ci_cross_page(&bad, false)?;
+        if proof.original_kernel_cr3 != proof.restored_kernel_cr3
+            || crate::arch::memory::ci_user_copy_count() != 0
+        { return Err(ObjectError::SelfTestFailed); }
+    }
+    drop(process);
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 10
+        || process::live_count() != live_before || crate::arch::current_tss_rsp0() != bootstrap
+    { return Err(ObjectError::SelfTestFailed); }
+    crate::arch::serial::println("FreeWorldOS: M5-U complete: second_unmapped=-14 first_unmapped=-14 overflow=-14 zero_copy_on_reject=yes frames_returned=10 scheduler=off timer_choice=off concurrent_unmap=unsupported");
+    Ok(())
+}
+
 #[cfg(feature = "m5t-ci-self-test")]
 pub fn test_page_walk_then_hello_ci_self_test() -> Result<(), ObjectError> {
     use crate::{
