@@ -59,6 +59,12 @@ impl ProcessAddressSpace {
     }
 
     #[cfg(feature = "m5u-ci-self-test")]
+    pub fn ci_three_page_user_copy(&self) -> Result<(), MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_three_page_user_copy_proof(self.root_frame, leaf)
+    }
+
+    #[cfg(feature = "m5u-ci-self-test")]
     pub fn ci_cross_page(&self, bytes: &[u8], bottom: u64, top: u64, expect_success: bool)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
     {

@@ -240,9 +240,22 @@ pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
     const USER_END: u64 = 0x0000_8000_0000_0000;
     if ptr >= USER_END || last >= USER_END { return Err(()); }
     let (cr3, _) = Cr3::read();
+    copy_from_user_root(cr3.start_address().as_u64(), ptr, output)
+}
+
+/// Same walker with an explicitly owned, inactive process root. This lets the
+/// three-page CI test prove all-or-nothing semantics without scheduling.
+#[cfg(feature = "m5r-ci-self-test")]
+fn copy_from_user_root(root: u64, ptr: u64, output: &mut [u8]) -> Result<(), ()> {
+    if output.is_empty() { return Ok(()); }
+    let len = u64::try_from(output.len()).map_err(|_| ())?;
+    let last = ptr.checked_add(len - 1).ok_or(())?;
+    if ptr >= 0x0000_8000_0000_0000 || last >= 0x0000_8000_0000_0000 {
+        return Err(());
+    }
     with_manager(|manager| {
         let walk = |addr: u64| -> Result<u64, ()> {
-            let mut table_phys = cr3.start_address().as_u64();
+            let mut table_phys = root;
             for shift in [39, 30, 21, 12] {
                 let table = unsafe { &*table_pointer(manager, table_phys) };
                 let entry = &table[((addr >> shift) & 511) as usize];
@@ -280,6 +293,50 @@ pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
         }
         Ok(())
     }).map_err(|_| ())?
+}
+
+
+/// Exercises a three-page read in the same process page-table root:
+/// last 8 bytes of RX code, the complete RW stack page, and first 8 bytes
+/// of the RX callgate page. A request extending into absent fourth page
+/// must leave both destination and copied-byte counter untouched.
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn ci_three_page_user_copy_proof(
+    root: PhysFrame, mapping: &InactiveUserLeaf,
+) -> Result<(), MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none()
+        || mapping.gate_frame.is_none()
+    { return Err(MemoryError::InvalidProcessUserPermissions); }
+    let stack = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    let gate = mapping.gate_frame.ok_or(MemoryError::PageNotMapped)?;
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let code_ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let stack_ptr = manager.allocator.direct_map_pointer(stack.start);
+        let gate_ptr = manager.allocator.direct_map_pointer(gate.start);
+        unsafe {
+            core::ptr::write_bytes(code_ptr.add(4088), 0x11, 8);
+            core::ptr::write_bytes(stack_ptr, 0x22, 4096);
+            core::ptr::write_bytes(gate_ptr, 0x33, 8);
+        }
+        Ok(())
+    })??;
+    let mut buffer = [0xa5u8; 4112];
+    ci_reset_user_copy_count();
+    copy_from_user_root(root.start, CODE + 4088, &mut buffer).map_err(|_| MemoryError::SelfTestDataMismatch)?;
+    if ci_user_copy_count() != 4112 || buffer[..8] != [0x11; 8]
+        || buffer[8..4104] != [0x22; 4096] || buffer[4104..] != [0x33; 8]
+    { return Err(MemoryError::SelfTestDataMismatch); }
+    crate::arch::serial::println("FreeWorldOS: M5-Y three-page success: segments=8+4096+8 copied=4112");
+
+    let mut rejected = [0xa5u8; 8208];
+    ci_reset_user_copy_count();
+    if copy_from_user_root(root.start, CODE + 4088, &mut rejected).is_ok()
+        || ci_user_copy_count() != 0 || rejected.iter().any(|b| *b != 0xa5)
+    { return Err(MemoryError::SelfTestDataMismatch); }
+    crate::arch::serial::println("FreeWorldOS: M5-Y fourth-page-unmapped: copied=0 destination=unchanged pages_preflighted=3");
+    Ok(())
 }
 
 #[cfg(feature = "m5u-ci-self-test")]

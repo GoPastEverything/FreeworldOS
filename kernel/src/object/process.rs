@@ -85,6 +85,11 @@ impl ProcessObject {
     }
 
     #[cfg(feature = "m5u-ci-self-test")]
+    pub fn ci_three_page_user_copy(&self) -> Result<(), MemoryError> {
+        self.address_space.ci_three_page_user_copy()
+    }
+
+    #[cfg(feature = "m5u-ci-self-test")]
     pub fn ci_cross_page(&self, bytes: &[u8], expect_success: bool)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
     {

@@ -737,7 +737,7 @@ pub use process_leaf::ci_unmapped_then_hello_proof;
 #[cfg(feature = "m5r-ci-self-test")]
 pub use process_leaf::ci_copy_active_user;
 #[cfg(feature = "m5u-ci-self-test")]
-pub use process_leaf::{ci_cross_page_proof, ci_user_copy_count, ci_reset_user_copy_count};
+pub use process_leaf::{ci_cross_page_proof, ci_three_page_user_copy_proof, ci_user_copy_count, ci_reset_user_copy_count};
 #[cfg(feature = "m5t-ci-self-test")]
 pub use process_leaf::ci_page_walk_then_hello_proof;
 #[cfg(feature = "m5l-ci-self-test")]
