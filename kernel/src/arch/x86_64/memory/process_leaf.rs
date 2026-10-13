@@ -214,6 +214,43 @@ pub fn map_test_callgate(root: PhysFrame, mapping: &mut InactiveUserLeaf) -> Res
 /// M5-T controlled user-copy: walk the currently active process CR3.
 /// Do not dereference a userspace virtual address until all four entries have
 /// been checked for PRESENT and USER_ACCESSIBLE. Only 4-KiB leaves supported.
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn ci_copy_two_user_pages(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
+    if output.len() != 20 { return Err(()); }
+    let end = ptr.checked_add(output.len() as u64).ok_or(())?;
+    if ptr >= 0x0000_8000_0000_0000 || end > 0x0000_8000_0000_0000 { return Err(()); }
+    let (cr3, _) = Cr3::read();
+    with_manager(|manager| {
+        // Preflight *all* pages into physical addresses before writing output.
+        // A missing second page must not result in a partial copy.
+        let mut phys = [0u64; 2];
+        let first = core::cmp::min(20, (4096 - (ptr & 4095)) as usize);
+        let count = if first == 20 { 1 } else { 2 };
+        for i in 0..count {
+            let addr = if i == 0 { ptr } else { ptr + first as u64 };
+            let mut table_phys = cr3.start_address().as_u64();
+            for shift in [39, 30, 21, 12] {
+                let table = unsafe { &*table_pointer(manager, table_phys) };
+                let entry = &table[((addr >> shift) & 511) as usize];
+                let flags = entry.flags();
+                if !flags.contains(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE)
+                    || flags.contains(PageTableFlags::HUGE_PAGE) { return Err(()); }
+                table_phys = entry.addr().as_u64();
+            }
+            phys[i] = table_phys + (addr & 4095);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                manager.allocator.direct_map_pointer(phys[0]), output.as_mut_ptr(), first);
+            if count == 2 {
+                core::ptr::copy_nonoverlapping(
+                    manager.allocator.direct_map_pointer(phys[1]), output.as_mut_ptr().add(first), 20-first);
+            }
+        }
+        Ok(())
+    }).map_err(|_| ())?
+}
+
 #[cfg(feature = "m5t-ci-self-test")]
 pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
     if output.is_empty() || output.len() > 20 { return Err(()); }
