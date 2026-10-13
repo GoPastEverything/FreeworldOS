@@ -84,6 +84,14 @@ impl ProcessObject {
         self.address_space.map_test_callgate()
     }
 
+    #[cfg(feature = "m5u-ci-self-test")]
+    pub fn ci_cross_page(&self, bytes: &[u8], expect_success: bool)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let (bottom, top) = self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds();
+        self.address_space.ci_cross_page(bytes, bottom, top, expect_success)
+    }
+
     #[cfg(feature = "m5t-ci-self-test")]
     pub fn ci_page_walk_then_hello(&self, bytes: &[u8])
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>

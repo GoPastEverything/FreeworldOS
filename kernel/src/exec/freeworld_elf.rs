@@ -97,6 +97,25 @@ pub fn invalid_then_hello_image() -> [u8; HELLO_IMAGE_BYTES] {
     image
 }
 
+#[cfg(feature = "m5u-ci-self-test")]
+pub const M5U_IMAGE_BYTES: usize = CODE_AT + 4096;
+
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn cross_page_image(pointer: u64, expected: i8) -> [u8; M5U_IMAGE_BYTES] {
+    let original = test_image(1);
+    let mut image = [0u8; M5U_IMAGE_BYTES];
+    image[..CODE_AT].copy_from_slice(&original[..CODE_AT]);
+    put64(&mut image, HEADER + 32, 4096);
+    put64(&mut image, HEADER + 40, 4096);
+    let mut stub = crate::arch::process_ring3::M5U_CODE;
+    stub[7..15].copy_from_slice(&pointer.to_le_bytes());
+    stub[25] = expected as u8;
+    image[CODE_AT..CODE_AT + stub.len()].copy_from_slice(&stub);
+    image[CODE_AT + 4096 - 8..CODE_AT + 4096]
+        .copy_from_slice(&crate::arch::process_ring3::M5R_TEXT[..8]);
+    image
+}
+
 pub struct LoadSegment<'a> { pub entry: u64, pub code: &'a [u8] }
 
 pub fn validate(bytes: &[u8]) -> Result<LoadSegment<'_>, Error> {
