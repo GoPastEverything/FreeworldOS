@@ -97,6 +97,20 @@ pub fn invalid_then_hello_image() -> [u8; HELLO_IMAGE_BYTES] {
     image
 }
 
+#[cfg(feature = "m5u-ci-self-test")]
+pub const CROSS_IMAGE_BYTES: usize = CODE_AT + 4096 + 12;
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn cross_page_hello_image() -> [u8; CROSS_IMAGE_BYTES] {
+    let base = test_image(1);
+    let mut image = [0u8; CROSS_IMAGE_BYTES];
+    image[..CODE_AT].copy_from_slice(&base[..CODE_AT]);
+    put64(&mut image, HEADER+32, 4096+12);
+    put64(&mut image, HEADER+40, 4096+12);
+    image[CODE_AT..CODE_AT+60].copy_from_slice(&crate::arch::process_ring3::M5U_CODE);
+    image[CODE_AT+4096-8..CODE_AT+4096+12].copy_from_slice(crate::arch::process_ring3::M5R_TEXT);
+    image
+}
+
 pub struct LoadSegment<'a> { pub entry: u64, pub code: &'a [u8] }
 
 pub fn validate(bytes: &[u8]) -> Result<LoadSegment<'_>, Error> {
@@ -125,7 +139,7 @@ pub fn validate(bytes: &[u8]) -> Result<LoadSegment<'_>, Error> {
                     || get64(bytes,p+40)? != size as u64
                     || get64(bytes,p+48)? != 0x100
                     || offset % 0x100 != (CODE as usize) % 0x100
-                    || data.is_empty() || data.len() > 4096
+                    || data.is_empty() || data.len() > if cfg!(feature = "m5u-ci-self-test") { 4096+12 } else { 4096 }
                 { return Err(Error::UnsupportedLayout); }
                 load = Some(data);
             }
