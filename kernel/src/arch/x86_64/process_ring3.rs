@@ -101,6 +101,19 @@ static M5R_MODE: AtomicBool = AtomicBool::new(false);
 static M5S_MODE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "m5t-ci-self-test")]
 static M5T_MODE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m5u-ci-self-test")]
+static M5U_MODE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "m5u-ci-self-test")]
+pub const M5U_CODE: [u8; 60] = [
+    0xb8,2,0,0,0,
+    0x48,0xbf,0xf8,0x1f,0,0x30,0,0x50,0,0,
+    0xbe,20,0,0,0,0x0f,0x05,
+    0x48,0x83,0xf8,0xf2,0x75,0x1e,
+    0xb8,2,0,0,0,
+    0x48,0xbf,0xf8,0x0f,0,0x30,0,0x50,0,0,
+    0xbe,20,0,0,0,0x0f,0x05,
+    0x48,0x83,0xf8,20,0x75,0x02,0xcd,0xf2,0x0f,0x0b,
+];
 #[cfg(feature = "m5s-ci-self-test")]
 pub const M5S_CODE: [u8; 60] = [
     0xb8, 2, 0, 0, 0, // eax=2
@@ -903,6 +916,13 @@ pub unsafe fn ci_callgate_roundtrip(root: u64, bottom: u64, top: u64) -> Ring3Pr
 }
 
 #[cfg(feature = "m5o-ci-self-test")]
+fn M5U_MODE_ACTIVE() -> bool {
+    #[cfg(feature = "m5u-ci-self-test")]
+    { M5U_MODE.load(Ordering::Acquire) }
+    #[cfg(not(feature = "m5u-ci-self-test"))]
+    { false }
+}
+#[cfg(feature = "m5o-ci-self-test")]
 fn M5S_MODE_ACTIVE() -> bool {
     #[cfg(feature = "m5s-ci-self-test")]
     { M5S_MODE.load(Ordering::Acquire) }
@@ -925,6 +945,17 @@ extern "C" fn __freeworld_m5r_print(ptr: u64, len: u64) -> u64 {
     { let _ = (ptr, len); return u64::MAX - 37; }
     #[cfg(feature = "m5r-ci-self-test")]
     {
+    #[cfg(feature = "m5u-ci-self-test")]
+    if M5U_MODE.load(Ordering::Acquire) {
+        let mut copy = [0u8; 20];
+        if len != 20 || super::memory::ci_copy_two_user_pages(ptr, &mut copy).is_err() {
+            unsafe { core::ptr::write_volatile(core::ptr::addr_of!(__freeworld_m5s_bad_seen) as *mut u64, 1) };
+            return u64::MAX - 13;
+        }
+        if copy != *M5R_TEXT { return u64::MAX - 21; }
+        serial::println(core::str::from_utf8(&copy).expect("ASCII"));
+        return 20;
+    }
     #[cfg(feature = "m5t-ci-self-test")]
     if M5T_MODE.load(Ordering::Acquire) {
         let mut bytes = [0u8; 20];
@@ -1053,6 +1084,55 @@ pub unsafe fn ci_page_walk_then_hello(root: u64, bottom: u64, top: u64) -> Ring3
     })
 }
 
+#[cfg(feature = "m5u-ci-self-test")]
+pub unsafe fn ci_cross_page_hello(root: u64, bottom: u64, top: u64) -> Ring3ProcessProof {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const USER_RSP: u64 = 0x0000_5000_3000_2000;
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let msrs = unsafe { snapshot_syscall_msrs() };
+        unsafe { configure_m5o_syscall(); }
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_kernel_top) as *mut u64, top);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_seen) as *mut u64, 0);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_dispatch_mode) as *mut u64, 1);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_result) as *mut u64, 0);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5s_bad_seen) as *mut u64, 0);
+        let bootstrap = gdt::read_rsp0();
+        unsafe { gdt::write_rsp0(top); }
+        PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+        PRIVATE_STACK_TOP.store(top, Ordering::Release);
+        PRIVATE_STACK_MODE.store(true, Ordering::Release);
+        M5P_MODE.store(true, Ordering::Release);
+        M5R_MODE.store(true, Ordering::Release);
+        M5S_MODE.store(true, Ordering::Release);
+        M5T_MODE.store(true, Ordering::Release);
+        M5U_MODE.store(true, Ordering::Release);
+        let proof = unsafe { enter_mode(root, CODE, USER_RSP, false) };
+        M5U_MODE.store(false, Ordering::Release);
+        M5T_MODE.store(false, Ordering::Release);
+        M5S_MODE.store(false, Ordering::Release);
+        M5R_MODE.store(false, Ordering::Release);
+        M5P_MODE.store(false, Ordering::Release);
+        assert_eq!(proof.frame_address, top - FRAME_SIZE as u64);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5s_bad_seen)), 1);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)), 1);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_user_rsp)), USER_RSP);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_return_rcx)), CODE + 50);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_number)), 2);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5p_result)), 20);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_observed_cr3)) & !0xfff, root);
+        assert_eq!(gdt::read_rsp0(), top);
+        unsafe { gdt::write_rsp0(bootstrap); }
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        m5o_write(core::ptr::addr_of!(__freeworld_m5p_dispatch_mode) as *mut u64, 0);
+        unsafe { restore_syscall_msrs(msrs); }
+        assert_eq!(gdt::read_rsp0(), bootstrap);
+        assert!(!super::interrupts_enabled());
+        serial::println("FreeWorldOS: M5-U two-page syscall: passed bad_ptr=0x500030001ff8 bad_result=-14 bad_no_fault=yes translation=two_pages good_ptr=0x500030000ff8 good_result=20 continuation=0x500030000032 user_rsp=0x500030002000 msrs=restored bootstrap_rsp0=restored");
+        proof
+    })
+}
+
 #[cfg(feature = "m5r-ci-self-test")]
 pub unsafe fn ci_hello_syscall(root: u64, bottom: u64, top: u64) -> Ring3ProcessProof {
     const CODE: u64 = 0x0000_5000_3000_0000;
@@ -1153,7 +1233,7 @@ unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bo
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
     EXPECTED_RIP.store(user_rip + if push_mode { PUSH_RETURN_RIP_OFFSET } else {
         #[cfg(feature = "m5o-ci-self-test")]
-        { if M5S_MODE_ACTIVE() { 58 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
+        { if M5U_MODE_ACTIVE() { 58 } else if M5S_MODE_ACTIVE() { 58 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
         #[cfg(not(feature = "m5o-ci-self-test"))]
         { RETURN_RIP_OFFSET }
     }, Ordering::Release);
