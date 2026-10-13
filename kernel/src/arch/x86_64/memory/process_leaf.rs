@@ -226,7 +226,7 @@ pub fn ci_reset_user_copy_count() {
 
 /// Validate the entire bounded user buffer before reading payload bytes.
 /// M5-U does not promise protection against concurrent unmapping.
-#[cfg(feature = "m5t-ci-self-test")]
+#[cfg(feature = "m5r-ci-self-test")]
 pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
     if output.is_empty() || output.len() > 20 { return Err(()); }
     let len = output.len() as u64;
