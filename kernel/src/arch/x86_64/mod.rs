@@ -5,6 +5,8 @@ mod interrupt_context;
 mod pic;
 mod pit;
 mod timer_entry;
+#[cfg(feature = "m5w-ci-self-test")]
+mod user_protections;
 #[cfg(feature = "m5c-ci-self-test")]
 mod user_roundtrip;
 #[cfg(feature = "m5g-ci-self-test")]
@@ -23,6 +25,11 @@ pub fn early_init(_boot_info: &mut BootInfo) {
     gdt::init();
     exceptions::init();
     serial::println("  arch: FreeWorld GDT/TSS/IDT online");
+}
+
+#[cfg(feature = "m5w-ci-self-test")]
+pub fn m5w_enable_protections_ci() {
+    user_protections::enable_and_assert();
 }
 
 pub fn timer_ticks() -> u64 {

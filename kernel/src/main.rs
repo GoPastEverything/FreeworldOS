@@ -288,6 +288,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         );
     }
 
+    #[cfg(feature = "m5w-ci-self-test")]
+    {
+        debug::selftest::run_infallible(
+            "m5w.smep_smap",
+            arch::m5w_enable_protections_ci,
+        );
+    }
+
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(

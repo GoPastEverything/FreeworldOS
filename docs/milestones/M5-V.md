@@ -11,3 +11,8 @@ FreeWorldOS native calls return an **i64 signed result in RAX** on x86-64:
 - Native syscall numbers and status values are experimental until explicit ABI publication. No generic syscall dispatcher or fault-safe user-copy guarantee is implied.
 
 M5-V changes only the existing controlled syscall test path. One process, no timer selection, no scheduler expansion. SMEP/SMAP and SYSRET canonical-return checking are later independent changes.
+
+Additional ABI rules (clarifications after review):
+- Native FreeWorld status values never use Linux's raw syscall error range -1 through -4095; the gap is deliberate.
+- A negative 64-bit result below i32::MIN is invalid and indicates a broken ABI, never a status.
+- A subsystem can receive another assigned block if its first 256 codes are exhausted. Retired codes must never be recycled.

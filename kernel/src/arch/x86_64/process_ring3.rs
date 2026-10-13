@@ -446,8 +446,9 @@ unsafe fn configure_m5o_syscall() {
     unsafe {
         write_msr(0xc000_0081, star);
         write_msr(0xc000_0082, __freeworld_m5o_syscall_entry as usize as u64);
-        write_msr(0xc000_0084, (1 << 9) | (1 << 10) | (1 << 8));
+        write_msr(0xc000_0084, (1 << 18) | (1 << 9) | (1 << 10) | (1 << 8));
         write_msr(0xc000_0080, read_msr(0xc000_0080) | 1);
+        assert_ne!(read_msr(0xc000_0084) & (1 << 18), 0, "M5-W SFMASK must clear AC");
     }
 }
 
