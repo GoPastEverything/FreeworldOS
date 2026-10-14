@@ -331,6 +331,10 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5s.unmapped_then_hello" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5t.page_walk_then_hello" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5u.cross_page_copy" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5y.three_page_user_copy" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-Y three-page success: segments=8+4096+8 copied=4112" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-Y fourth-page-unmapped: copied=0 destination=unchanged pages_preflighted=3" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-Y complete: three_page=ok missing_fourth=rejected copied_on_reject=0 frames_returned=7 scheduler=off timer_choice=off" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5w.smep_smap" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-W protections: smep=1 smap=1 cpuid=checked" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-U second-unmapped: result=-8193 copied=0" selftest-boot-serial.log

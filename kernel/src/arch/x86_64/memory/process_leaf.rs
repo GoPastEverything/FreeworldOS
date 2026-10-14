@@ -224,22 +224,38 @@ pub fn ci_reset_user_copy_count() {
     USER_COPY_BYTES.store(0, core::sync::atomic::Ordering::Release);
 }
 
-/// Validate the entire bounded user buffer before reading payload bytes.
-/// M5-U does not promise protection against concurrent unmapping.
+/// Copy from the CURRENT process's lower-canonical user address space.
+/// Preflight every 4-KiB page (PRESENT, USER at all four levels, no huge
+/// mappings), then perform the actual copy via supervisor direct-map aliases.
+/// Empty output is a no-op. All address validation precedes payload reads.
+///
+/// Invariant: this is NOT fault-safe against concurrent unmapping and assumes
+/// the current proof's single process with stable mappings and active CR3.
+/// No maximum page count or fixed 20-byte bound in the walker itself.
 #[cfg(feature = "m5r-ci-self-test")]
 pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
-    if output.is_empty() || output.len() > 20 { return Err(()); }
-    let len = output.len() as u64;
+    if output.is_empty() { return Ok(()); }
+    let len = u64::try_from(output.len()).map_err(|_| ())?;
+    let last = ptr.checked_add(len - 1).ok_or(())?;
+    const USER_END: u64 = 0x0000_8000_0000_0000;
+    if ptr >= USER_END || last >= USER_END { return Err(()); }
+    let (cr3, _) = Cr3::read();
+    copy_from_user_root(cr3.start_address().as_u64(), ptr, output)
+}
+
+/// Same walker with an explicitly owned, inactive process root. This lets the
+/// three-page CI test prove all-or-nothing semantics without scheduling.
+#[cfg(feature = "m5r-ci-self-test")]
+fn copy_from_user_root(root: u64, ptr: u64, output: &mut [u8]) -> Result<(), ()> {
+    if output.is_empty() { return Ok(()); }
+    let len = u64::try_from(output.len()).map_err(|_| ())?;
     let last = ptr.checked_add(len - 1).ok_or(())?;
     if ptr >= 0x0000_8000_0000_0000 || last >= 0x0000_8000_0000_0000 {
         return Err(());
     }
-    let first_len = core::cmp::min(output.len(), (4096 - (ptr & 4095)) as usize);
-    let second_len = output.len() - first_len;
-    let (cr3, _) = Cr3::read();
     with_manager(|manager| {
         let walk = |addr: u64| -> Result<u64, ()> {
-            let mut table_phys = cr3.start_address().as_u64();
+            let mut table_phys = root;
             for shift in [39, 30, 21, 12] {
                 let table = unsafe { &*table_pointer(manager, table_phys) };
                 let entry = &table[((addr >> shift) & 511) as usize];
@@ -250,27 +266,77 @@ pub fn ci_copy_active_user(ptr: u64, output: &mut [u8]) -> Result<(), ()> {
             }
             table_phys.checked_add(addr & 4095).ok_or(())
         };
-        // Both page walks finish before the FIRST copy.
-        let first_phys = walk(ptr)?;
-        let second_phys = if second_len != 0 {
-            Some(walk(ptr + first_len as u64)?)
-        } else { None };
-        let first = manager.allocator.direct_map_pointer(first_phys) as *const u8;
-        unsafe { core::ptr::copy_nonoverlapping(first, output.as_mut_ptr(), first_len) };
-        #[cfg(feature = "m5u-ci-self-test")]
-        USER_COPY_BYTES.fetch_add(first_len, core::sync::atomic::Ordering::AcqRel);
-        if let Some(phys) = second_phys {
-            let second = manager.allocator.direct_map_pointer(phys) as *const u8;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    second, output.as_mut_ptr().add(first_len), second_len
-                );
-            }
+        // Pass 1: walk every page, including the last partial page.
+        // No payload copy or destination modification before preflight finishes.
+        let mut checked = 0usize;
+        while checked < output.len() {
+            let vaddr = ptr.checked_add(checked as u64).ok_or(())?;
+            let chunk = core::cmp::min(
+                output.len() - checked, (4096 - (vaddr & 4095)) as usize);
+            let _ = walk(vaddr)?;
+            checked += chunk;
+        }
+        // Pass 2: re-walk and copy each segment via its physical alias.
+        let mut copied = 0usize;
+        while copied < output.len() {
+            let vaddr = ptr.checked_add(copied as u64).ok_or(())?;
+            let chunk = core::cmp::min(
+                output.len() - copied, (4096 - (vaddr & 4095)) as usize);
+            let phys = walk(vaddr)?;
+            let src = manager.allocator.direct_map_pointer(phys) as *const u8;
+            unsafe { core::ptr::copy_nonoverlapping(
+                src, output.as_mut_ptr().add(copied), chunk,
+            ) };
             #[cfg(feature = "m5u-ci-self-test")]
-            USER_COPY_BYTES.fetch_add(second_len, core::sync::atomic::Ordering::AcqRel);
+            USER_COPY_BYTES.fetch_add(chunk, core::sync::atomic::Ordering::AcqRel);
+            copied += chunk;
         }
         Ok(())
     }).map_err(|_| ())?
+}
+
+
+/// Exercises a three-page read in the same process page-table root:
+/// last 8 bytes of RX code, the complete RW stack page, and first 8 bytes
+/// of the RX callgate page. A request extending into absent fourth page
+/// must leave both destination and copied-byte counter untouched.
+#[cfg(feature = "m5u-ci-self-test")]
+pub fn ci_three_page_user_copy_proof(
+    root: PhysFrame, mapping: &InactiveUserLeaf,
+) -> Result<(), MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none()
+        || mapping.gate_frame.is_none()
+    { return Err(MemoryError::InvalidProcessUserPermissions); }
+    let stack = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    let gate = mapping.gate_frame.ok_or(MemoryError::PageNotMapped)?;
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let code_ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let stack_ptr = manager.allocator.direct_map_pointer(stack.start);
+        let gate_ptr = manager.allocator.direct_map_pointer(gate.start);
+        unsafe {
+            core::ptr::write_bytes(code_ptr.add(4088), 0x11, 8);
+            core::ptr::write_bytes(stack_ptr, 0x22, 4096);
+            core::ptr::write_bytes(gate_ptr, 0x33, 8);
+        }
+        Ok(())
+    })??;
+    let mut buffer = [0xa5u8; 4112];
+    ci_reset_user_copy_count();
+    copy_from_user_root(root.start, CODE + 4088, &mut buffer).map_err(|_| MemoryError::SelfTestDataMismatch)?;
+    if ci_user_copy_count() != 4112 || buffer[..8] != [0x11; 8]
+        || buffer[8..4104] != [0x22; 4096] || buffer[4104..] != [0x33; 8]
+    { return Err(MemoryError::SelfTestDataMismatch); }
+    crate::arch::serial::println("FreeWorldOS: M5-Y three-page success: segments=8+4096+8 copied=4112");
+
+    let mut rejected = [0xa5u8; 8208];
+    ci_reset_user_copy_count();
+    if copy_from_user_root(root.start, CODE + 4088, &mut rejected).is_ok()
+        || ci_user_copy_count() != 0 || rejected.iter().any(|b| *b != 0xa5)
+    { return Err(MemoryError::SelfTestDataMismatch); }
+    crate::arch::serial::println("FreeWorldOS: M5-Y fourth-page-unmapped: copied=0 destination=unchanged pages_preflighted=3");
+    Ok(())
 }
 
 #[cfg(feature = "m5u-ci-self-test")]
