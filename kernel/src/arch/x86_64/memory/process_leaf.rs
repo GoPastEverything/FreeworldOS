@@ -419,21 +419,63 @@ pub fn ci_copy_to_user_proof(root: PhysFrame, mapping: &InactiveUserLeaf)
     })??;
     crate::arch::serial::println("FreeWorldOS: M5-Z read-only-later: copied=0 destination=unchanged");
 
-    // A request ending in an unmapped fourth page is similarly rejected
-    // even after preflight has traversed a writable first and RX second
-    // page. The crucial observable is no mutation of writable first page.
+    // Dedicated missing-page case: temporarily make the *second* touched
+    // page RW/NX as well, so it cannot mask absence of the fourth page.
+    // Restore the original RX gate mapping on every checked success path.
+    with_manager(|manager| {
+        let table = unsafe { &mut *table_pointer(manager, mapping.l1.start) };
+        let index = indices(CODE + 8192)[3];
+        if !table[index].flags().contains(PageTableFlags::PRESENT)
+            || table[index].flags().contains(PageTableFlags::WRITABLE)
+        { return Err(MemoryError::SelfTestDataMismatch); }
+        table[index].set_addr(
+            PhysAddr::new(gate.start),
+            leaf_flags(PagePermissions::user_read_write())?,
+        );
+        Ok(())
+    })??;
+    // Two writable segments must succeed, including bytes spanning a leaf.
     USER_COPY_WRITE_BYTES.store(0, core::sync::atomic::Ordering::Release);
-    if copy_to_user_root(root.start, CODE + 8192 - 16, &[0x88; 4128]).is_ok()
+    copy_to_user_root(root.start, CODE + 8192 - 8, &[0x66; 16])
+        .map_err(|_| MemoryError::SelfTestDataMismatch)?;
+    if USER_COPY_WRITE_BYTES.load(core::sync::atomic::Ordering::Acquire) != 16 {
+        return Err(MemoryError::SelfTestDataMismatch);
+    }
+    with_manager(|manager| {
+        let sp = manager.allocator.direct_map_pointer(stack.start);
+        let gp = manager.allocator.direct_map_pointer(gate.start);
+        let tail = unsafe { core::slice::from_raw_parts(sp.add(4088), 8) };
+        let head = unsafe { core::slice::from_raw_parts(gp, 8) };
+        if tail != [0x66; 8] || head != [0x66; 8] {
+            return Err(MemoryError::SelfTestDataMismatch);
+        }
+        Ok(())
+    })??;
+    crate::arch::serial::println("FreeWorldOS: M5-Z two-writable-page success: segments=8+8 copied=16");
+
+    // Touch writable stack and writable gate, followed by absent fourth page.
+    // A partial first-page write would overwrite 0x66; reject before any write.
+    USER_COPY_WRITE_BYTES.store(0, core::sync::atomic::Ordering::Release);
+    if copy_to_user_root(root.start, CODE + 8192 - 8, &[0x88; 4112]).is_ok()
         || USER_COPY_WRITE_BYTES.load(core::sync::atomic::Ordering::Acquire) != 0 {
         return Err(MemoryError::SelfTestDataMismatch);
     }
     with_manager(|manager| {
         let sp = manager.allocator.direct_map_pointer(stack.start);
-        let tail = unsafe { core::slice::from_raw_parts(sp.add(4096 - 16), 16) };
-        if tail != [0xa5; 16] { return Err(MemoryError::SelfTestDataMismatch); }
+        let gp = manager.allocator.direct_map_pointer(gate.start);
+        let tail = unsafe { core::slice::from_raw_parts(sp.add(4088), 8) };
+        let head = unsafe { core::slice::from_raw_parts(gp, 8) };
+        if tail != [0x66; 8] || head != [0x66; 8] {
+            return Err(MemoryError::SelfTestDataMismatch);
+        }
+        let table = unsafe { &mut *table_pointer(manager, mapping.l1.start) };
+        table[indices(CODE + 8192)[3]].set_addr(
+            PhysAddr::new(gate.start),
+            leaf_flags(PagePermissions::user_read_execute())?,
+        );
         Ok(())
     })??;
-    crate::arch::serial::println("FreeWorldOS: M5-Z unmapped-later: copied=0 destination=unchanged");
+    crate::arch::serial::println("FreeWorldOS: M5-Z unmapped-fourth-after-writable: copied=0 destination=unchanged");
     Ok(())
 }
 

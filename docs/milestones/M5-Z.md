@@ -7,4 +7,4 @@
 - Same process-root walker for future active-root integration and inactive-root acceptance proof.
 - Tests cover writable leaf success, write spanning from writable stack into RX callgate (no mutation), and a missing later page rejection (no mutation). All prevalidation failures must keep the copied-byte counter at zero.
 
-This remains a **test-only** writer: no production syscall entry or per-task ownership yet. No concurrent unmap/remap safety and no scheduler or timer choice. The current missing-page test overlaps an earlier read-only page; a dedicated writable-writable-missing-page test will be needed before declaring complete acceptance.
+This remains a **test-only** writer: no production syscall entry or per-task ownership yet. No concurrent unmap/remap safety and no scheduler or timer choice. The dedicated missing-page test first changes the existing RX gate alias to RW/NX in the inactive process root, proves an 8+8 writable span, then attempts a write into an absent fourth page; both earlier writable spans remain unchanged and the counter remains zero. The gate permission is restored to RX before teardown.
