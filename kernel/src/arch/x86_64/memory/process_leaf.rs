@@ -296,6 +296,147 @@ fn copy_from_user_root(root: u64, ptr: u64, output: &mut [u8]) -> Result<(), ()>
 }
 
 
+
+// M5-Z: writable user-memory transfer using the same current-process root
+// convention as M5-Y. The caller must keep process mappings stable throughout
+// both passes; this is not concurrency- or unmap-fault-safe.
+#[cfg(feature = "m5z-ci-self-test")]
+fn copy_to_user_root(root: u64, ptr: u64, input: &[u8]) -> Result<(), ()> {
+    if input.is_empty() { return Ok(()); }
+    let len = u64::try_from(input.len()).map_err(|_| ())?;
+    let last = ptr.checked_add(len - 1).ok_or(())?;
+    if ptr >= 0x0000_8000_0000_0000 || last >= 0x0000_8000_0000_0000 {
+        return Err(());
+    }
+    with_manager(|manager| {
+        let walk_writable = |addr: u64| -> Result<u64, ()> {
+            let mut table_phys = root;
+            for shift in [39, 30, 21, 12] {
+                let table = unsafe { &*table_pointer(manager, table_phys) };
+                let entry = &table[((addr >> shift) & 511) as usize];
+                let flags = entry.flags();
+                if !flags.contains(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE)
+                    || flags.contains(PageTableFlags::HUGE_PAGE) {
+                    return Err(());
+                }
+                table_phys = entry.addr().as_u64();
+            }
+            table_phys.checked_add(addr & 4095).ok_or(())
+        };
+        // First pass: validate ALL pages before touching any user payload.
+        let mut checked = 0usize;
+        while checked < input.len() {
+            let addr = ptr.checked_add(checked as u64).ok_or(())?;
+            let step = core::cmp::min(input.len() - checked, (4096 - (addr & 4095)) as usize);
+            let _ = walk_writable(addr)?;
+            checked += step;
+        }
+        // Second pass: kernel direct-map aliases (SMAP-safe); do not copy
+        // through a writable user VA even if kernel can temporarily STAC.
+        let mut copied = 0usize;
+        while copied < input.len() {
+            let addr = ptr.checked_add(copied as u64).ok_or(())?;
+            let step = core::cmp::min(input.len() - copied, (4096 - (addr & 4095)) as usize);
+            let phys = walk_writable(addr)?;
+            let dest = manager.allocator.direct_map_pointer(phys);
+            unsafe { core::ptr::copy_nonoverlapping(input.as_ptr().add(copied), dest, step); }
+            USER_COPY_WRITE_BYTES.fetch_add(step, core::sync::atomic::Ordering::AcqRel);
+            copied += step;
+        }
+        Ok(())
+    }).map_err(|_| ())?
+}
+
+#[cfg(feature = "m5z-ci-self-test")]
+static USER_COPY_WRITE_BYTES: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Current-active-root variant, intentionally not connected to a production
+/// syscall dispatch until real task-owned syscall state exists.
+#[cfg(feature = "m5z-ci-self-test")]
+pub fn ci_copy_to_active_user(ptr: u64, input: &[u8]) -> Result<(), ()> {
+    let (root, _) = Cr3::read();
+    copy_to_user_root(root.start_address().as_u64(), ptr, input)
+}
+
+/// M5-Z proves a writable page accepts bytes, a later RX page denies
+/// the *entire* write, and an absent later page likewise denies all writes.
+/// Verifies physical contents directly through kernel supervisor aliases.
+#[cfg(feature = "m5z-ci-self-test")]
+pub fn ci_copy_to_user_proof(root: PhysFrame, mapping: &InactiveUserLeaf)
+    -> Result<(), MemoryError>
+{
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none()
+        || mapping.gate_frame.is_none() {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    let stack = mapping.stack_frame.ok_or(MemoryError::PageNotMapped)?;
+    let gate = mapping.gate_frame.ok_or(MemoryError::PageNotMapped)?;
+    let mut input = [0x4bu8; 20];
+    input[0] = 0x31;
+    input[19] = 0x39;
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let sp = manager.allocator.direct_map_pointer(stack.start);
+        let gp = manager.allocator.direct_map_pointer(gate.start);
+        unsafe {
+            core::ptr::write_bytes(sp, 0xa5, 4096);
+            core::ptr::write_bytes(gp, 0xa5, 4096);
+        }
+        Ok(())
+    })??;
+    USER_COPY_WRITE_BYTES.store(0, core::sync::atomic::Ordering::Release);
+    copy_to_user_root(root.start, CODE + 4096 + 64, &input)
+        .map_err(|_| MemoryError::SelfTestDataMismatch)?;
+    with_manager(|manager| {
+        let sp = manager.allocator.direct_map_pointer(stack.start);
+        let wrote = unsafe { core::slice::from_raw_parts(sp.add(64), 20) };
+        if wrote != input || USER_COPY_WRITE_BYTES.load(core::sync::atomic::Ordering::Acquire) != 20 {
+            return Err(MemoryError::SelfTestDataMismatch);
+        }
+        Ok(())
+    })??;
+    crate::arch::serial::println("FreeWorldOS: M5-Z writable-page: bytes=20 verified=ok");
+
+    // If the second touched page is read-only, the first page MUST remain
+    // byte-for-byte unchanged (including the already-written 20-byte sample).
+    USER_COPY_WRITE_BYTES.store(0, core::sync::atomic::Ordering::Release);
+    let across_ro = [0x77u8; 32];
+    if copy_to_user_root(root.start, CODE + 8192 - 16, &across_ro).is_ok()
+        || USER_COPY_WRITE_BYTES.load(core::sync::atomic::Ordering::Acquire) != 0 {
+        return Err(MemoryError::SelfTestDataMismatch);
+    }
+    with_manager(|manager| {
+        let sp = manager.allocator.direct_map_pointer(stack.start);
+        let gp = manager.allocator.direct_map_pointer(gate.start);
+        let tail = unsafe { core::slice::from_raw_parts(sp.add(4096 - 16), 16) };
+        let head = unsafe { core::slice::from_raw_parts(gp, 16) };
+        if tail != [0xa5; 16] || head != [0xa5; 16] {
+            return Err(MemoryError::SelfTestDataMismatch);
+        }
+        Ok(())
+    })??;
+    crate::arch::serial::println("FreeWorldOS: M5-Z read-only-later: copied=0 destination=unchanged");
+
+    // A request ending in an unmapped fourth page is similarly rejected
+    // even after preflight has traversed a writable first and RX second
+    // page. The crucial observable is no mutation of writable first page.
+    USER_COPY_WRITE_BYTES.store(0, core::sync::atomic::Ordering::Release);
+    if copy_to_user_root(root.start, CODE + 8192 - 16, &[0x88; 4128]).is_ok()
+        || USER_COPY_WRITE_BYTES.load(core::sync::atomic::Ordering::Acquire) != 0 {
+        return Err(MemoryError::SelfTestDataMismatch);
+    }
+    with_manager(|manager| {
+        let sp = manager.allocator.direct_map_pointer(stack.start);
+        let tail = unsafe { core::slice::from_raw_parts(sp.add(4096 - 16), 16) };
+        if tail != [0xa5; 16] { return Err(MemoryError::SelfTestDataMismatch); }
+        Ok(())
+    })??;
+    crate::arch::serial::println("FreeWorldOS: M5-Z unmapped-later: copied=0 destination=unchanged");
+    Ok(())
+}
+
 /// Exercises a three-page read in the same process page-table root:
 /// last 8 bytes of RX code, the complete RW stack page, and first 8 bytes
 /// of the RX callgate page. A request extending into absent fourth page

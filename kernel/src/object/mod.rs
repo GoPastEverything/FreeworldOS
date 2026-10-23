@@ -1702,6 +1702,29 @@ pub fn test_three_page_user_copy_ci_self_test() -> Result<(), ObjectError> {
     Ok(())
 }
 
+#[cfg(feature = "m5z-ci-self-test")]
+pub fn test_copy_to_user_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat}, memory::PagePermissions};
+    let profile = ExecutionProfile { environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld, abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64 };
+    let before = crate::memory::frame_reuse_stats()?;
+    let live = process::live_count();
+    let mut process = ProcessObject::new(profile)?;
+    process.map_one_user_leaf(0x0000_5000_3000_0000, PagePermissions::user_read_execute())?;
+    process.map_adjacent_user_stack()?;
+    process.map_test_callgate()?;
+    process.ci_copy_to_user()?;
+    drop(process);
+    let after = crate::memory::frame_reuse_stats()?;
+    if process::live_count() != live
+        || after.returned_total.saturating_sub(before.returned_total) != 7 {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println("FreeWorldOS: M5-Z complete: writable=ok readonly=rejected missing=rejected zero_copy_on_reject=yes frames_returned=7 scheduler=off timer_choice=off");
+    Ok(())
+}
+
 #[cfg(feature = "m5t-ci-self-test")]
 pub fn test_page_walk_then_hello_ci_self_test() -> Result<(), ObjectError> {
     use crate::{

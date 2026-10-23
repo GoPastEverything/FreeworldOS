@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test,m5l-ci-self-test,m5m-ci-self-test,m5n-ci-self-test,m5o-ci-self-test,m5p-ci-self-test,m5q-ci-self-test,m5r-ci-self-test,m5s-ci-self-test,m5t-ci-self-test,m5u-ci-self-test,m5v-ci-self-test,m5w-ci-self-test
+          cargo build --features m1-ci-self-test,m3-ci-self-test,m35a-ci-self-test,m35b-ci-self-test,m35c-ci-self-test,m35c2b-ci-self-test,m4a-ci-self-test,m4b-ci-self-test,m4c-ci-self-test,m4d-ci-self-test,m4e-ci-self-test,m5a-ci-self-test,m5b-ci-self-test,m5c-ci-self-test,m5d-ci-self-test,m5e-ci-self-test,m5f-ci-self-test,m5g-ci-self-test,m5h-ci-self-test,m5i-ci-self-test,m5j-ci-self-test,m5k-ci-self-test,m5l-ci-self-test,m5m-ci-self-test,m5n-ci-self-test,m5o-ci-self-test,m5p-ci-self-test,m5q-ci-self-test,m5r-ci-self-test,m5s-ci-self-test,m5t-ci-self-test,m5u-ci-self-test,m5v-ci-self-test,m5w-ci-self-test,m5z-ci-self-test
           BIOS_IMAGE="$(
             find target -type f -name 'freeworldos-bios.img' -printf '%T@ %p\n'               | sort -nr               | head -n 1               | cut -d' ' -f2-
           )"
@@ -332,6 +332,10 @@ jobs:
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5t.page_walk_then_hello" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5u.cross_page_copy" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: SELFTEST PASS name=m5y.three_page_user_copy" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: SELFTEST PASS name=m5z.copy_to_user" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-Z writable-page: bytes=20 verified=ok" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-Z read-only-later: copied=0 destination=unchanged" selftest-boot-serial.log
+          grep -Fq "FreeWorldOS: M5-Z unmapped-later: copied=0 destination=unchanged" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-Y three-page success: segments=8+4096+8 copied=4112" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-Y fourth-page-unmapped: copied=0 destination=unchanged pages_preflighted=3" selftest-boot-serial.log
           grep -Fq "FreeWorldOS: M5-Y complete: three_page=ok missing_fourth=rejected copied_on_reject=0 frames_returned=7 scheduler=off timer_choice=off" selftest-boot-serial.log

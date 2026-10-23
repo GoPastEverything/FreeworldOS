@@ -57,6 +57,7 @@ m5w-ci-self-test = ["m5v-ci-self-test"]
 m5w-smap-fault-test = ["m5w-ci-self-test"]
 m5w-smep-fault-test = ["m5w-ci-self-test"]
 m5x-return-fault-test = ["m5w-ci-self-test"]
+m5z-ci-self-test = ["m5w-ci-self-test"]
 
 [dependencies]
 fw-abi = { path = "../fw-abi" }

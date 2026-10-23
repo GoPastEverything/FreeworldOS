@@ -58,6 +58,12 @@ impl ProcessAddressSpace {
         crate::arch::memory::map_test_callgate(self.root_frame, leaf)
     }
 
+    #[cfg(feature = "m5z-ci-self-test")]
+    pub fn ci_copy_to_user(&self) -> Result<(), MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_copy_to_user_proof(self.root_frame, leaf)
+    }
+
     #[cfg(feature = "m5u-ci-self-test")]
     pub fn ci_three_page_user_copy(&self) -> Result<(), MemoryError> {
         let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
