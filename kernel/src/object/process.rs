@@ -84,6 +84,11 @@ impl ProcessObject {
         self.address_space.map_test_callgate()
     }
 
+    #[cfg(feature = "m5z-ci-self-test")]
+    pub fn ci_copy_to_user(&self) -> Result<(), MemoryError> {
+        self.address_space.ci_copy_to_user()
+    }
+
     #[cfg(feature = "m5u-ci-self-test")]
     pub fn ci_three_page_user_copy(&self) -> Result<(), MemoryError> {
         self.address_space.ci_three_page_user_copy()
