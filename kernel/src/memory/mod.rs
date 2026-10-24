@@ -120,6 +120,14 @@ impl ProcessAddressSpace {
         crate::arch::memory::ci_one_number_syscall_proof(self.root_frame, leaf, bottom, top)
     }
 
+    #[cfg(feature = "m5aa-ci-self-test")]
+    pub fn ci_task_syscall(
+        &self, context: &crate::arch::process_ring3::TaskSyscallContext,
+    ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::ci_task_syscall_proof(self.root_frame, leaf, context)
+    }
+
     #[cfg(feature = "m5o-ci-self-test")]
     pub fn ci_syscall_sysret(&self, bottom: u64, top: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>

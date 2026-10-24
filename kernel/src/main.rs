@@ -309,6 +309,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         debug::selftest::run_result("m5z.copy_to_user", object::test_copy_to_user_ci_self_test);
     }
 
+    #[cfg(feature = "m5aa-ci-self-test")]
+    {
+        debug::selftest::run_result(
+            "m5aa.task_syscall_entry",
+            object::test_task_syscall_ci_self_test,
+        );
+    }
+
     #[cfg(feature = "m3-ci-self-test")]
     {
         debug::selftest::run_result(
