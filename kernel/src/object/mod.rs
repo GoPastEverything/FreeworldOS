@@ -1454,6 +1454,37 @@ pub fn test_task_syscall_ci_self_test() -> Result<(), ObjectError> {
     Ok(())
 }
 
+#[cfg(feature = "m5ab-ci-self-test")]
+pub fn test_task_native_dispatch_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld, image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64, architecture: Architecture::X86_64,
+    };
+    let before = crate::memory::frame_reuse_stats()?;
+    let live = process::live_count();
+    let bootstrap = crate::arch::current_tss_rsp0();
+    let mut process = ProcessObject::new_with_syscall_task(profile)?;
+    process.map_one_user_leaf(0x0000_5000_3000_0000, PagePermissions::user_read_execute())?;
+    process.map_adjacent_user_stack()?;
+    let proof = process.ci_task_native_dispatch()?;
+    if proof.original_kernel_cr3 != proof.restored_kernel_cr3
+        || proof.original_kernel_cr3 == proof.observed_process_cr3
+        || crate::arch::current_tss_rsp0() != bootstrap
+        || process::live_count() != live + 1 { return Err(ObjectError::SelfTestFailed); }
+    drop(process);
+    let after = crate::memory::frame_reuse_stats()?;
+    if after.returned_total.saturating_sub(before.returned_total) != 10
+        || process::live_count() != live { return Err(ObjectError::SelfTestFailed); }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-AB complete: task_owned_dispatch=yes syscalls=4 signed64_errors=yes user_copy=page_walk frames_returned=10 scheduler=off timer_choice=off",
+    );
+    Ok(())
+}
+
 #[cfg(feature = "m5p-ci-self-test")]
 pub fn test_one_number_syscall_ci_self_test() -> Result<(), ObjectError> {
     use crate::{
