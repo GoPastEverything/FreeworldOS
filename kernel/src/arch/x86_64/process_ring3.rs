@@ -155,6 +155,27 @@ pub const M5AB_CODE: [u8; 95] = [
 #[cfg(feature = "m5ab-ci-self-test")]
 static M5AB_MODE: AtomicBool = AtomicBool::new(false);
 
+/// M5-AC: a native user process that calls #1(41)->42 and then
+/// FW_SYS_EXIT(7). The trailing UD2 must never execute; there is no INT F2.
+#[cfg(feature = "m5ac-ci-self-test")]
+pub const M5AC_PROCESS_CODE: [u8; 32] = [
+    0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x29, 0x00, 0x00, 0x00,
+    0x0f, 0x05, 0x48, 0x83, 0xf8, 0x2a, 0x75, 0x0c, 0xb8, 0x03,
+    0x00, 0x00, 0x00, 0xbf, 0x07, 0x00, 0x00, 0x00, 0x0f, 0x05,
+    0x0f, 0x0b,
+];
+
+#[cfg(feature = "m5ac-ci-self-test")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeExitProof {
+    pub exit_status: u64,
+    pub process_cr3: u64,
+    pub kernel_cr3: u64,
+    pub handler_rsp: u64,
+    pub kernel_top: u64,
+    pub syscalls: u64,
+}
+
 #[cfg(feature = "m5r-ci-self-test")]
 pub const M5R_TEXT: &[u8; 20] = b"hello from FreeWorld";
 #[cfg(feature = "m5r-ci-self-test")]
@@ -348,6 +369,11 @@ pub struct TaskSyscallRegisters {
     pub m5ab_success: u64,          // 104
     pub m5ab_user_error: u64,       // 112
     pub m5ab_unsupported: u64,      // 120
+    pub lifecycle_active: u64,     // 128: armed by owning process before entry
+    pub exit_requested: u64,       // 136: native FW_SYS_EXIT terminates
+    pub exit_status: u64,          // 144
+    pub saved_kernel_rsp: u64,     // 152: task-specific continuation
+    pub saved_kernel_cr3: u64,     // 160: kernel paging root
 }
 
 #[cfg(feature = "m5aa-ci-self-test")]
@@ -376,7 +402,7 @@ impl TaskSyscallContext {
 }
 
 #[cfg(feature = "m5aa-ci-self-test")]
-const _: () = assert!(core::mem::size_of::<TaskSyscallRegisters>() == 128);
+const _: () = assert!(core::mem::size_of::<TaskSyscallRegisters>() == 168);
 
 #[cfg(feature = "m5aa-ci-self-test")]
 global_asm!(r#"
@@ -434,6 +460,11 @@ __freeworld_m5aa_syscall_entry:
     pop rsi
     pop rdi
 
+    // M5-AC: FW_SYS_EXIT is terminal. Do not return to the caller via
+    // SYSRET, and do not use the old M5-G INT F2 test-return entry.
+    cmp qword ptr gs:[{exit_requested}], 0
+    jne .Lm5ac_exit
+
     // M5-X invariant, enforced in the new path before restoring user RSP.
     mov rcx, qword ptr gs:[{return_rcx}]
     mov r11, rcx
@@ -461,6 +492,23 @@ __freeworld_m5aa_syscall_entry:
     swapgs
     iretq
     ud2
+
+.Lm5ac_exit:
+    // We still run on the private task stack, with kernel GS selecting
+    // the task-owned context. Restore CR3 *before* resuming any Rust code.
+    mov rdx, qword ptr gs:[{saved_kernel_cr3}]
+    mov r8, qword ptr gs:[{saved_kernel_rsp}]
+    mov cr3, rdx
+    swapgs
+    mov rsp, r8
+    mov eax, 1
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret
 "#,
     self_ptr = const core::mem::offset_of!(TaskSyscallRegisters, self_ptr),
     kernel_top = const core::mem::offset_of!(TaskSyscallRegisters, kernel_top),
@@ -472,8 +520,53 @@ __freeworld_m5aa_syscall_entry:
     process_cr3 = const core::mem::offset_of!(TaskSyscallRegisters, process_cr3),
     seen = const core::mem::offset_of!(TaskSyscallRegisters, seen),
     result = const core::mem::offset_of!(TaskSyscallRegisters, result),
-    abort_seen = const core::mem::offset_of!(TaskSyscallRegisters, abort_seen)
+    abort_seen = const core::mem::offset_of!(TaskSyscallRegisters, abort_seen),
+    exit_requested = const core::mem::offset_of!(TaskSyscallRegisters, exit_requested),
+    saved_kernel_cr3 = const core::mem::offset_of!(TaskSyscallRegisters, saved_kernel_cr3),
+    saved_kernel_rsp = const core::mem::offset_of!(TaskSyscallRegisters, saved_kernel_rsp)
 );
+
+
+#[cfg(feature = "m5ac-ci-self-test")]
+global_asm!(r#"
+    .intel_syntax noprefix
+    .section .text
+    .global __freeworld_m5ac_enter
+    .type __freeworld_m5ac_enter,@function
+__freeworld_m5ac_enter:
+    // Arguments follow SysV:
+    // rdi=process CR3, rsi=user RIP, rdx=user RSP,
+    // rcx=user CS, r8=user SS, r9=owned task context.
+    // Saved continuation is in this task's own state, not M5-G globals.
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov qword ptr [r9 + {saved_rsp}], rsp
+    mov rax, cr3
+    mov qword ptr [r9 + {saved_cr3}], rax
+    mov cr3, rdi
+    push r8
+    push rdx
+    push 2
+    push rcx
+    push rsi
+    iretq
+    ud2
+"#,
+    saved_rsp = const core::mem::offset_of!(TaskSyscallRegisters, saved_kernel_rsp),
+    saved_cr3 = const core::mem::offset_of!(TaskSyscallRegisters, saved_kernel_cr3),
+);
+
+#[cfg(feature = "m5ac-ci-self-test")]
+unsafe extern "C" {
+    fn __freeworld_m5ac_enter(
+        root: u64, rip: u64, rsp: u64, cs: u64, ss: u64,
+        context: *mut TaskSyscallRegisters,
+    ) -> u64;
+}
 
 #[cfg(feature = "m5aa-ci-self-test")]
 unsafe extern "C" { fn __freeworld_m5aa_syscall_entry(); }
@@ -488,6 +581,17 @@ extern "C" fn __freeworld_m5aa_syscall_dispatch(
     // Pointer is GS-base-derived and therefore from a kernel-owned boxed task
     // context, never a user argument or global syscall slot.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!((*state).handler_rsp), rsp) };
+    // Only an admitted process can terminate by a native exit request.
+    #[cfg(feature = "m5ac-ci-self-test")]
+    if number == fw_abi::FW_SYS_EXIT
+        && unsafe { (*state).lifecycle_active == 1 }
+    {
+        unsafe {
+            (*state).exit_status = argument;
+            (*state).exit_requested = 1;
+        }
+        return 0;
+    }
     // M5-AA legacy marker remains solely for its original proof image.
     if number == USER_MARKER { return USER_MARKER; }
     #[cfg(feature = "m5ab-ci-self-test")]
@@ -529,6 +633,95 @@ extern "C" fn __freeworld_m5aa_syscall_dispatch(
     }
     #[cfg(not(feature = "m5ab-ci-self-test"))]
     { let _ = (argument, length); fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL) }
+}
+
+
+/// M5-AC lifecycle entry: no M5-G one-shot test-return globals or INT F2.
+/// Called by an owning ProcessObject that has already transitioned to Running.
+#[cfg(feature = "m5ac-ci-self-test")]
+pub unsafe fn start_native_process(root: u64, task: &TaskSyscallContext) -> NativeExitProof {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const USER_RSP: u64 = CODE + 0x2000;
+    let before = task.snapshot();
+    let bottom = before.kernel_bottom;
+    let top = before.kernel_top;
+    assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert_eq!(top & 15, 0);
+    assert_eq!(before.seen, 0, "process must start once");
+    assert_eq!(before.exit_requested, 0);
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert_ne!(top, gdt::read_rsp0());
+    assert!(!super::in_interrupt());
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let bootstrap = gdt::read_rsp0();
+        let (prior_root, _) = Cr3::read();
+        assert_ne!(prior_root.start_address().as_u64(), root);
+        let msrs = unsafe { snapshot_syscall_msrs() };
+        let old_gs = unsafe { read_msr(0xc000_0101) };
+        let old_kernel_gs = unsafe { read_msr(0xc000_0102) };
+        let ctx = task.as_ptr();
+        let old_legacy_seen = m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen));
+        unsafe {
+            (*ctx).self_ptr = ctx as u64;
+            (*ctx).lifecycle_active = 1;
+            configure_m5o_syscall();
+            write_msr(0xc000_0082, __freeworld_m5aa_syscall_entry as usize as u64);
+            write_msr(0xc000_0102, ctx as u64);
+            gdt::write_rsp0(top);
+        }
+        let returned = unsafe {
+            __freeworld_m5ac_enter(
+                root, CODE, USER_RSP,
+                u64::from(super::user_code_selector().0),
+                u64::from(super::user_data_selector().0),
+                ctx,
+            )
+        };
+        assert_eq!(returned, 1, "only terminal FW_SYS_EXIT may return");
+        let result = task.snapshot();
+        let (kernel_after, _) = Cr3::read();
+        assert_eq!(kernel_after.start_address().as_u64(), prior_root.start_address().as_u64());
+        assert_eq!(result.saved_kernel_cr3 & !0xfff, prior_root.start_address().as_u64());
+        assert_ne!(result.saved_kernel_rsp, 0);
+        assert_eq!(result.lifecycle_active, 1);
+        assert_eq!(result.exit_requested, 1);
+        assert_eq!(result.exit_status, 7);
+        assert_eq!(result.seen, 2);
+        assert_eq!(result.return_rcx, CODE + 30);
+        assert_eq!(result.user_rax, fw_abi::FW_SYS_EXIT);
+        assert_eq!(result.user_rsp, USER_RSP);
+        assert_eq!(result.process_cr3 & !0xfff, root);
+        assert_eq!(result.entry_rsp, top);
+        assert!(result.handler_rsp >= bottom && result.handler_rsp < top);
+        assert_eq!(result.abort_seen, 0);
+        assert_eq!(old_legacy_seen, m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)));
+        assert_eq!(gdt::read_rsp0(), top);
+        unsafe {
+            // Exit returned to bootstrap call stack with the kernel CR3 and
+            // GS swapped back. There is no live user continuation.
+            (*ctx).lifecycle_active = 0;
+            gdt::write_rsp0(bootstrap);
+            restore_syscall_msrs(msrs);
+            write_msr(0xc000_0102, old_kernel_gs);
+            write_msr(0xc000_0101, old_gs);
+        }
+        assert_eq!(gdt::read_rsp0(), bootstrap);
+        assert_eq!(unsafe { read_msr(0xc000_0101) }, old_gs);
+        assert_eq!(unsafe { read_msr(0xc000_0102) }, old_kernel_gs);
+        assert!(!super::interrupts_enabled());
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-AC native exit: syscall=3 code={} calls={} private_rsp={:#x} handler_rsp={:#x} bootstrap_rsp0=restored kernel_cr3=restored gs=restored msrs=restored int_f2=unused scheduler=off timer_choice=off\n",
+            result.exit_status, result.seen, result.entry_rsp, result.handler_rsp,
+        ));
+        NativeExitProof {
+            exit_status: result.exit_status,
+            process_cr3: result.process_cr3 & !0xfff,
+            kernel_cr3: kernel_after.start_address().as_u64(),
+            handler_rsp: result.handler_rsp,
+            kernel_top: top,
+            syscalls: result.seen,
+        }
+    })
 }
 
 /// One-task entry and MSR lifetime proof; separate from the M5-O legacy

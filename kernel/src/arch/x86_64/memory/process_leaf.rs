@@ -704,6 +704,35 @@ pub fn ci_one_number_syscall_proof(
     Ok(proof)
 }
 
+/// Stage the M5-AC one-page native process executable. Actual exit is
+/// handled by task-owned SYSCALL; no INT F2 or global M5-G resume slot.
+#[cfg(feature = "m5ac-ci-self-test")]
+pub fn start_native_process(
+    root: PhysFrame, mapping: &InactiveUserLeaf,
+    task: &crate::arch::process_ring3::TaskSyscallContext,
+) -> Result<crate::arch::process_ring3::NativeExitProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none() {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let target = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let code = crate::arch::process_ring3::M5AC_PROCESS_CODE;
+        unsafe {
+            core::ptr::write_bytes(target, 0, PAGE_SIZE as usize);
+            core::ptr::copy_nonoverlapping(code.as_ptr(), target, code.len());
+        }
+        Ok(())
+    })??;
+    let proof = unsafe { crate::arch::process_ring3::start_native_process(root.start, task) };
+    if proof.process_cr3 != root.start {
+        return Err(MemoryError::ProcessUserLeafCorrupt);
+    }
+    with_manager(|manager| { verify_chain(manager, root, mapping) })??;
+    Ok(proof)
+}
+
 #[cfg(feature = "m5aa-ci-self-test")]
 pub fn ci_task_syscall_proof(
     root: PhysFrame, mapping: &InactiveUserLeaf,
