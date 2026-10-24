@@ -704,6 +704,33 @@ pub fn ci_one_number_syscall_proof(
     Ok(proof)
 }
 
+#[cfg(feature = "m5aa-ci-self-test")]
+pub fn ci_task_syscall_proof(
+    root: PhysFrame, mapping: &InactiveUserLeaf,
+    context: &crate::arch::process_ring3::TaskSyscallContext,
+) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    if mapping.virtual_address != CODE || mapping.stack_frame.is_none() {
+        return Err(MemoryError::InvalidProcessUserPermissions);
+    }
+    with_manager(|manager| {
+        verify_chain(manager, root, mapping)?;
+        let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
+        let bytes = crate::arch::process_ring3::SYSCALL_STUB;
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()); }
+        Ok(())
+    })??;
+    let proof = unsafe {
+        crate::arch::process_ring3::ci_task_syscall(root.start, context)
+    };
+    if proof.observed_process_cr3 & !0xfff != root.start
+        || proof.original_kernel_cr3 != proof.restored_kernel_cr3 {
+        return Err(MemoryError::ProcessUserLeafCorrupt);
+    }
+    with_manager(|manager| { verify_chain(manager, root, mapping) })??;
+    Ok(proof)
+}
+
 #[cfg(feature = "m5o-ci-self-test")]
 pub fn ci_syscall_sysret_proof(
     root: PhysFrame, mapping: &InactiveUserLeaf, bottom: u64, top: u64,

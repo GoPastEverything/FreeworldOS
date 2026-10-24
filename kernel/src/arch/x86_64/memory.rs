@@ -726,6 +726,8 @@ pub use process_leaf::{ci_stage_explicit_queue, ci_check_explicit_queue_marker};
 pub use process_leaf::{map_test_callgate, ci_callgate_proof};
 #[cfg(feature = "m5o-ci-self-test")]
 pub use process_leaf::ci_syscall_sysret_proof;
+#[cfg(feature = "m5aa-ci-self-test")]
+pub use process_leaf::ci_task_syscall_proof;
 #[cfg(feature = "m5p-ci-self-test")]
 pub use process_leaf::ci_one_number_syscall_proof;
 #[cfg(feature = "m5q-ci-self-test")]

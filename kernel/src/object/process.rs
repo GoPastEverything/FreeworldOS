@@ -25,6 +25,8 @@ pub struct ProcessObject {
     address_space: ProcessAddressSpace,
     #[cfg(feature = "m5i-ci-self-test")]
     kernel_stack: Option<super::task::KernelStack>,
+    #[cfg(feature = "m5aa-ci-self-test")]
+    user_task: Option<alloc::boxed::Box<super::task::UserSyscallTask>>,
 }
 
 impl ProcessObject {
@@ -43,6 +45,8 @@ impl ProcessObject {
             address_space,
             #[cfg(feature = "m5i-ci-self-test")]
             kernel_stack: None,
+            #[cfg(feature = "m5aa-ci-self-test")]
+            user_task: None,
         })
     }
 
@@ -72,6 +76,27 @@ impl ProcessObject {
         let mut process = Self::new(profile)?;
         process.kernel_stack = Some(stack);
         Ok(process)
+    }
+
+    #[cfg(feature = "m5aa-ci-self-test")]
+    pub fn new_with_syscall_task(profile: ExecutionProfile) -> Result<Self, super::ObjectError> {
+        // Allocate the guarded task stack BEFORE cloning higher-half page
+        // table mappings into this process's private CR3.
+        // Keep ProcessObject / FwObject thin: embedding a 4-page stack
+        // descriptor inline would increase the size of *every* Arc<FwObject>
+        // and exhaust the fixed small-object heap class in existing tests.
+        let task = alloc::boxed::Box::new(super::task::UserSyscallTask::new()?);
+        let mut process = Self::new(profile)?;
+        process.user_task = Some(task);
+        Ok(process)
+    }
+
+    #[cfg(feature = "m5aa-ci-self-test")]
+    pub fn ci_task_syscall(&self)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let task = self.user_task.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        self.address_space.ci_task_syscall(task.context())
     }
 
     #[cfg(feature = "m5j-ci-self-test")]

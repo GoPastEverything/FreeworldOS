@@ -306,6 +306,236 @@ __freeworld_m5g_return_entry:
 );
 
 
+
+// M5-AA: task-owned state used by the new syscall entry. Its stable address
+// is installed as IA32_KERNEL_GS_BASE for the one admitted user task. The
+// kernel stores no syscall return state in a static/global slot on this path.
+#[cfg(feature = "m5aa-ci-self-test")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TaskSyscallRegisters {
+    pub self_ptr: u64,              // 0: GS-base -> self for Rust dispatch
+    pub kernel_bottom: u64,         // 8
+    pub kernel_top: u64,            // 16: switch RSP before any call/push
+    pub user_rsp: u64,              // 24
+    pub return_rcx: u64,            // 32
+    pub return_r11: u64,            // 40
+    pub user_rax: u64,              // 48
+    pub process_cr3: u64,           // 56
+    pub entry_rsp: u64,             // 64
+    pub handler_rsp: u64,           // 72
+    pub result: u64,                // 80
+    pub seen: u64,                  // 88
+    pub abort_seen: u64,            // 96
+}
+
+#[cfg(feature = "m5aa-ci-self-test")]
+#[repr(transparent)]
+pub struct TaskSyscallContext(core::cell::UnsafeCell<TaskSyscallRegisters>);
+
+// Only one user task is admitted, with interrupts masked. This exception to
+// normal Sync requires the caller to keep the task alive, pin its boxed
+// storage, and never concurrently arm or access it during user execution.
+#[cfg(feature = "m5aa-ci-self-test")]
+unsafe impl Sync for TaskSyscallContext {}
+
+#[cfg(feature = "m5aa-ci-self-test")]
+impl TaskSyscallContext {
+    pub fn new(bottom: u64, top: u64) -> Self {
+        Self(core::cell::UnsafeCell::new(TaskSyscallRegisters {
+            kernel_bottom: bottom, kernel_top: top,
+            ..TaskSyscallRegisters::default()
+        }))
+    }
+    pub fn as_ptr(&self) -> *mut TaskSyscallRegisters { self.0.get() }
+    pub fn snapshot(&self) -> TaskSyscallRegisters {
+        // Only inspect after returning from the single non-preemptible syscall.
+        unsafe { *self.0.get() }
+    }
+}
+
+#[cfg(feature = "m5aa-ci-self-test")]
+const _: () = assert!(core::mem::size_of::<TaskSyscallRegisters>() == 104);
+
+#[cfg(feature = "m5aa-ci-self-test")]
+global_asm!(r#"
+    .intel_syntax noprefix
+    .section .text
+    .global __freeworld_m5aa_syscall_entry
+    .type __freeworld_m5aa_syscall_entry,@function
+__freeworld_m5aa_syscall_entry:
+    // SYSCALL does not change the user RSP. SWAPGS supplies this CPU's
+    // currently admitted task-owned context without reading user memory.
+    swapgs
+    mov qword ptr gs:[{user_rsp}], rsp
+    mov rsp, qword ptr gs:[{kernel_top}]
+    mov qword ptr gs:[{entry_rsp}], rsp
+    mov qword ptr gs:[{return_rcx}], rcx
+    mov qword ptr gs:[{return_r11}], r11
+    mov qword ptr gs:[{user_rax}], rax
+    mov rax, cr3
+    mov qword ptr gs:[{process_cr3}], rax
+    mov qword ptr gs:[{seen}], 1
+
+    // Preserve user registers except SYSCALL's documented RCX, R11 and
+    // returned RAX. 12 pushes keep 16-byte SysV alignment before the call.
+    push rdi
+    push rsi
+    push rdx
+    push r8
+    push r9
+    push r10
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, qword ptr gs:[{self_ptr}]
+    mov rsi, qword ptr gs:[{user_rax}]
+    cld
+    call __freeworld_m5aa_syscall_dispatch
+    mov qword ptr gs:[{result}], rax
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    pop r10
+    pop r9
+    pop r8
+    pop rdx
+    pop rsi
+    pop rdi
+
+    // M5-X invariant, enforced in the new path before restoring user RSP.
+    mov rcx, qword ptr gs:[{return_rcx}]
+    mov r11, rcx
+    shl r11, 16
+    sar r11, 16
+    cmp r11, rcx
+    jne .Lm5aa_abort
+    mov r11, qword ptr gs:[{return_r11}]
+    mov rax, qword ptr gs:[{result}]
+    mov rsp, qword ptr gs:[{user_rsp}]
+    swapgs
+    sysretq
+    ud2
+.Lm5aa_abort:
+    // Controlled user-mode abort; not signal delivery or general cleanup.
+    mov qword ptr gs:[{abort_seen}], 1
+    mov r11, qword ptr gs:[{return_r11}]
+    push 0x1b
+    push qword ptr gs:[{user_rsp}]
+    or r11, 2
+    push r11
+    push 0x23
+    movabs rax, 0x0000500030003000
+    push rax
+    swapgs
+    iretq
+    ud2
+"#,
+    self_ptr = const core::mem::offset_of!(TaskSyscallRegisters, self_ptr),
+    kernel_top = const core::mem::offset_of!(TaskSyscallRegisters, kernel_top),
+    user_rsp = const core::mem::offset_of!(TaskSyscallRegisters, user_rsp),
+    entry_rsp = const core::mem::offset_of!(TaskSyscallRegisters, entry_rsp),
+    return_rcx = const core::mem::offset_of!(TaskSyscallRegisters, return_rcx),
+    return_r11 = const core::mem::offset_of!(TaskSyscallRegisters, return_r11),
+    user_rax = const core::mem::offset_of!(TaskSyscallRegisters, user_rax),
+    process_cr3 = const core::mem::offset_of!(TaskSyscallRegisters, process_cr3),
+    seen = const core::mem::offset_of!(TaskSyscallRegisters, seen),
+    result = const core::mem::offset_of!(TaskSyscallRegisters, result),
+    abort_seen = const core::mem::offset_of!(TaskSyscallRegisters, abort_seen)
+);
+
+#[cfg(feature = "m5aa-ci-self-test")]
+unsafe extern "C" { fn __freeworld_m5aa_syscall_entry(); }
+
+#[cfg(feature = "m5aa-ci-self-test")]
+#[unsafe(no_mangle)]
+extern "C" fn __freeworld_m5aa_syscall_dispatch(
+    state: *mut TaskSyscallRegisters, number: u64,
+) -> u64 {
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+    // Pointer is GS-base-derived and therefore from a kernel-owned boxed task
+    // context, never a user argument or global syscall slot.
+    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!((*state).handler_rsp), rsp) };
+    if number == USER_MARKER { USER_MARKER } else {
+        fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL)
+    }
+}
+
+/// One-task entry and MSR lifetime proof; separate from the M5-O legacy
+/// syscall regression. No scheduler choice or concurrent CPU access.
+#[cfg(feature = "m5aa-ci-self-test")]
+pub unsafe fn ci_task_syscall(
+    root: u64, state: &TaskSyscallContext,
+) -> Ring3ProcessProof {
+    const CODE: u64 = 0x0000_5000_3000_0000;
+    const USER_TOP: u64 = CODE + 0x2000;
+    let ctx = state.as_ptr();
+    let original = state.snapshot();
+    let bottom = original.kernel_bottom;
+    let top = original.kernel_top;
+    assert_eq!(top - bottom, gdt::RING0_PRIVILEGE_STACK_SIZE as u64);
+    assert_eq!(top & 15, 0);
+    assert_eq!(gdt::read_rsp0(), super::ring0_privilege_stack_top());
+    assert_ne!(top, gdt::read_rsp0());
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let saved_msrs = unsafe { snapshot_syscall_msrs() };
+        let saved_gs_base = unsafe { read_msr(0xc000_0101) };
+        let saved_kernel_gs_base = unsafe { read_msr(0xc000_0102) };
+        unsafe {
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*ctx).self_ptr), ctx as u64);
+            configure_m5o_syscall();
+            write_msr(0xc000_0082, __freeworld_m5aa_syscall_entry as usize as u64);
+            write_msr(0xc000_0102, ctx as u64);
+        }
+        // The old test-only global slots are explicitly disarmed; this
+        // syscall must communicate only through the task-owned object.
+        m5o_write(core::ptr::addr_of!(__freeworld_m5o_seen) as *mut u64, 0);
+        let bootstrap_rsp0 = gdt::read_rsp0();
+        unsafe { gdt::write_rsp0(top); }
+        PRIVATE_STACK_BOTTOM.store(bottom, Ordering::Release);
+        PRIVATE_STACK_TOP.store(top, Ordering::Release);
+        PRIVATE_STACK_MODE.store(true, Ordering::Release);
+        M5O_MODE.store(true, Ordering::Release);
+        let proof = unsafe { enter_mode(root, CODE, USER_TOP, false) };
+        M5O_MODE.store(false, Ordering::Release);
+        let result = state.snapshot();
+        assert_eq!(result.seen, 1);
+        assert_eq!(result.entry_rsp, top);
+        assert!(result.handler_rsp >= bottom && result.handler_rsp < top);
+        assert_eq!(result.return_rcx, CODE + 12);
+        assert_eq!(result.user_rsp, USER_TOP);
+        assert_eq!(result.user_rax, USER_MARKER);
+        assert_eq!(result.result, USER_MARKER);
+        assert_eq!(result.process_cr3 & !0xfff, root);
+        assert_eq!(result.abort_seen, 0);
+        assert_eq!(proof.frame_address, top - FRAME_SIZE as u64);
+        assert_eq!(m5o_read(core::ptr::addr_of!(__freeworld_m5o_seen)), 0);
+        assert_eq!(gdt::read_rsp0(), top);
+        unsafe {
+            gdt::write_rsp0(bootstrap_rsp0);
+            restore_syscall_msrs(saved_msrs);
+            write_msr(0xc000_0102, saved_kernel_gs_base);
+            write_msr(0xc000_0101, saved_gs_base);
+        }
+        PRIVATE_STACK_MODE.store(false, Ordering::Release);
+        assert_eq!(gdt::read_rsp0(), bootstrap_rsp0);
+        assert_eq!(unsafe { read_msr(0xc000_0101) }, saved_gs_base);
+        assert_eq!(unsafe { read_msr(0xc000_0102) }, saved_kernel_gs_base);
+        serial::write_fmt(format_args!(
+            "FreeWorldOS: M5-AA task syscall: syscall=real context=task_owned entry_rsp={:#x} handler_rsp={:#x} private_stack=verified bootstrap_rsp0=separate gs=restored msrs=restored sysret=real legacy_globals=untouched scheduler=off timer_choice=off\n",
+            result.entry_rsp, result.handler_rsp
+        ));
+        proof
+    })
+}
+
 #[cfg(feature = "m5o-ci-self-test")]
 global_asm!(r#"
     .intel_syntax noprefix

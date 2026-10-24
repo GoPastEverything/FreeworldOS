@@ -407,6 +407,30 @@ impl Drop for TaskObject {
     }
 }
 
+// M5-AA: a user task owns both a guarded private kernel stack and the
+// stable, boxed syscall context addressed by the CPU's KERNEL_GS_BASE.
+// The context is never global or shared with the bootstrap RSP0.
+#[cfg(feature = "m5aa-ci-self-test")]
+pub(crate) struct UserSyscallTask {
+    stack: KernelStack,
+    context: alloc::boxed::Box<crate::arch::process_ring3::TaskSyscallContext>,
+}
+#[cfg(feature = "m5aa-ci-self-test")]
+impl UserSyscallTask {
+    pub(crate) fn new() -> Result<Self, ObjectError> {
+        let stack = KernelStack::new()?;
+        let (bottom, top) = stack.bounds();
+        let context = alloc::boxed::Box::new(
+            crate::arch::process_ring3::TaskSyscallContext::new(bottom, top),
+        );
+        Ok(Self { stack, context })
+    }
+    pub(crate) fn context(&self) -> &crate::arch::process_ring3::TaskSyscallContext {
+        &self.context
+    }
+    pub(crate) fn bounds(&self) -> (u64, u64) { self.stack.bounds() }
+}
+
 pub(crate) struct KernelStack {
     guard_page: u64,
     stack_bottom: u64,
