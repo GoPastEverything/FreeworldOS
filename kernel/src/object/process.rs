@@ -99,6 +99,14 @@ impl ProcessObject {
         self.address_space.ci_task_syscall(task.context())
     }
 
+    #[cfg(feature = "m5ab-ci-self-test")]
+    pub fn ci_task_native_dispatch(&self)
+        -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>
+    {
+        let task = self.user_task.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        self.address_space.ci_task_native_dispatch(task.context())
+    }
+
     #[cfg(feature = "m5j-ci-self-test")]
     pub fn ci_private_stack_bounds(&self) -> Result<(u64, u64), MemoryError> {
         Ok(self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds())

@@ -707,7 +707,7 @@ pub fn ci_one_number_syscall_proof(
 #[cfg(feature = "m5aa-ci-self-test")]
 pub fn ci_task_syscall_proof(
     root: PhysFrame, mapping: &InactiveUserLeaf,
-    context: &crate::arch::process_ring3::TaskSyscallContext,
+    context: &crate::arch::process_ring3::TaskSyscallContext, native: bool,
 ) -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError> {
     const CODE: u64 = 0x0000_5000_3000_0000;
     if mapping.virtual_address != CODE || mapping.stack_frame.is_none() {
@@ -716,12 +716,23 @@ pub fn ci_task_syscall_proof(
     with_manager(|manager| {
         verify_chain(manager, root, mapping)?;
         let ptr = manager.allocator.direct_map_pointer(mapping.data_frame.start);
-        let bytes = crate::arch::process_ring3::SYSCALL_STUB;
+        let bytes: &[u8] = if native {
+            #[cfg(feature = "m5ab-ci-self-test")]
+            { &crate::arch::process_ring3::M5AB_CODE }
+            #[cfg(not(feature = "m5ab-ci-self-test"))]
+            { return Err(MemoryError::InvalidProcessUserPermissions); }
+        } else { &crate::arch::process_ring3::SYSCALL_STUB };
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()); }
+        #[cfg(feature = "m5ab-ci-self-test")]
+        if native {
+            unsafe { core::ptr::copy_nonoverlapping(
+                crate::arch::process_ring3::M5R_TEXT.as_ptr(), ptr.add(0x80), 20,
+            ) };
+        }
         Ok(())
     })??;
     let proof = unsafe {
-        crate::arch::process_ring3::ci_task_syscall(root.start, context)
+        crate::arch::process_ring3::ci_task_syscall_mode(root.start, context, native)
     };
     if proof.observed_process_cr3 & !0xfff != root.start
         || proof.original_kernel_cr3 != proof.restored_kernel_cr3 {

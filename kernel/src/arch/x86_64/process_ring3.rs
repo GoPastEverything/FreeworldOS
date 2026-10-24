@@ -137,6 +137,24 @@ pub const M5S_CODE: [u8; 61] = [
     0xcd, 0xf2, // test-only exit
     0x0f, 0x0b, // UD2
 ];
+/// M5-AB: four real syscalls from one statically staged U+RX code page.
+//// syscall #1 (41 -> 42); #2 valid user buffer -> 20; #2 unmapped
+/// -> full 64-bit -8193; unsupported #99 -> full 64-bit -4098.
+/// Every branch compares *RAX*, not just EAX, before the final INT F2.
+#[cfg(feature = "m5ab-ci-self-test")]
+pub const M5AB_CODE: [u8; 95] = [
+    0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x29, 0x00, 0x00, 0x00, 0x0f, 0x05,
+    0x48, 0x83, 0xf8, 0x2a, 0x75, 0x4b, 0xb8, 0x02, 0x00, 0x00, 0x00, 0x48,
+    0xbf, 0x80, 0x00, 0x00, 0x30, 0x00, 0x50, 0x00, 0x00, 0xbe, 0x14, 0x00,
+    0x00, 0x00, 0x0f, 0x05, 0x48, 0x83, 0xf8, 0x14, 0x75, 0x2f, 0xb8, 0x02,
+    0x00, 0x00, 0x00, 0x48, 0xbf, 0x00, 0x30, 0x00, 0x30, 0x00, 0x50, 0x00,
+    0x00, 0xbe, 0x14, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48, 0x3d, 0xff, 0xdf,
+    0xff, 0xff, 0x75, 0x11, 0xb8, 0x63, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48,
+    0x3d, 0xfe, 0xef, 0xff, 0xff, 0x75, 0x02, 0xcd, 0xf2, 0x0f, 0x0b,
+];
+#[cfg(feature = "m5ab-ci-self-test")]
+static M5AB_MODE: AtomicBool = AtomicBool::new(false);
+
 #[cfg(feature = "m5r-ci-self-test")]
 pub const M5R_TEXT: &[u8; 20] = b"hello from FreeWorld";
 #[cfg(feature = "m5r-ci-self-test")]
@@ -327,6 +345,9 @@ pub struct TaskSyscallRegisters {
     pub result: u64,                // 80
     pub seen: u64,                  // 88
     pub abort_seen: u64,            // 96
+    pub m5ab_success: u64,          // 104
+    pub m5ab_user_error: u64,       // 112
+    pub m5ab_unsupported: u64,      // 120
 }
 
 #[cfg(feature = "m5aa-ci-self-test")]
@@ -355,7 +376,7 @@ impl TaskSyscallContext {
 }
 
 #[cfg(feature = "m5aa-ci-self-test")]
-const _: () = assert!(core::mem::size_of::<TaskSyscallRegisters>() == 104);
+const _: () = assert!(core::mem::size_of::<TaskSyscallRegisters>() == 128);
 
 #[cfg(feature = "m5aa-ci-self-test")]
 global_asm!(r#"
@@ -375,7 +396,7 @@ __freeworld_m5aa_syscall_entry:
     mov qword ptr gs:[{user_rax}], rax
     mov rax, cr3
     mov qword ptr gs:[{process_cr3}], rax
-    mov qword ptr gs:[{seen}], 1
+    inc qword ptr gs:[{seen}]
 
     // Preserve user registers except SYSCALL's documented RCX, R11 and
     // returned RAX. 12 pushes keep 16-byte SysV alignment before the call.
@@ -391,6 +412,10 @@ __freeworld_m5aa_syscall_entry:
     push r13
     push r14
     push r15
+    // Forward user SysV FreeWorld ABI: RAX=number, RDI=arg0,
+    // RSI=arg1. Registers are saved on the *private* kernel stack.
+    mov rcx, rsi
+    mov rdx, rdi
     mov rdi, qword ptr gs:[{self_ptr}]
     mov rsi, qword ptr gs:[{user_rax}]
     cld
@@ -456,16 +481,54 @@ unsafe extern "C" { fn __freeworld_m5aa_syscall_entry(); }
 #[cfg(feature = "m5aa-ci-self-test")]
 #[unsafe(no_mangle)]
 extern "C" fn __freeworld_m5aa_syscall_dispatch(
-    state: *mut TaskSyscallRegisters, number: u64,
+    state: *mut TaskSyscallRegisters, number: u64, argument: u64, length: u64,
 ) -> u64 {
     let rsp: u64;
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
     // Pointer is GS-base-derived and therefore from a kernel-owned boxed task
     // context, never a user argument or global syscall slot.
     unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!((*state).handler_rsp), rsp) };
-    if number == USER_MARKER { USER_MARKER } else {
-        fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL)
+    // M5-AA legacy marker remains solely for its original proof image.
+    if number == USER_MARKER { return USER_MARKER; }
+    #[cfg(feature = "m5ab-ci-self-test")]
+    {
+        let result = match number {
+            1 => {
+                match argument.checked_add(1) {
+                    Some(value) => value,
+                    None => fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED),
+                }
+            }
+            2 => {
+                let mut buffer = [0u8; 20];
+                if length != buffer.len() as u64
+                    || super::memory::ci_copy_active_user(argument, &mut buffer).is_err()
+                {
+                    fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS)
+                } else if buffer != *M5R_TEXT {
+                    fw_abi::encode_error(fw_abi::FW_ERR_UNSUPPORTED)
+                } else {
+                    serial::println(core::str::from_utf8(&buffer).expect("ASCII FreeWorld text"));
+                    length
+                }
+            }
+            _ => fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL),
+        };
+        if M5AB_MODE.load(Ordering::Acquire) {
+            unsafe {
+                if number == 1 && result == 42 || number == 2 && result == 20 {
+                    (*state).m5ab_success += 1;
+                } else if result == fw_abi::encode_error(fw_abi::FW_ERR_USER_ADDRESS) {
+                    (*state).m5ab_user_error += 1;
+                } else if result == fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL) {
+                    (*state).m5ab_unsupported += 1;
+                }
+            }
+        }
+        return result;
     }
+    #[cfg(not(feature = "m5ab-ci-self-test"))]
+    { let _ = (argument, length); fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL) }
 }
 
 /// One-task entry and MSR lifetime proof; separate from the M5-O legacy
@@ -473,6 +536,13 @@ extern "C" fn __freeworld_m5aa_syscall_dispatch(
 #[cfg(feature = "m5aa-ci-self-test")]
 pub unsafe fn ci_task_syscall(
     root: u64, state: &TaskSyscallContext,
+) -> Ring3ProcessProof {
+    unsafe { ci_task_syscall_mode(root, state, false) }
+}
+
+#[cfg(feature = "m5aa-ci-self-test")]
+pub unsafe fn ci_task_syscall_mode(
+    root: u64, state: &TaskSyscallContext, native: bool,
 ) -> Ring3ProcessProof {
     const CODE: u64 = 0x0000_5000_3000_0000;
     const USER_TOP: u64 = CODE + 0x2000;
@@ -503,16 +573,29 @@ pub unsafe fn ci_task_syscall(
         PRIVATE_STACK_TOP.store(top, Ordering::Release);
         PRIVATE_STACK_MODE.store(true, Ordering::Release);
         M5O_MODE.store(true, Ordering::Release);
+        #[cfg(feature = "m5ab-ci-self-test")]
+        M5AB_MODE.store(native, Ordering::Release);
+        #[cfg(not(feature = "m5ab-ci-self-test"))]
+        assert!(!native, "native dispatch needs m5ab-ci-self-test");
         let proof = unsafe { enter_mode(root, CODE, USER_TOP, false) };
+        #[cfg(feature = "m5ab-ci-self-test")]
+        M5AB_MODE.store(false, Ordering::Release);
         M5O_MODE.store(false, Ordering::Release);
         let result = state.snapshot();
-        assert_eq!(result.seen, 1);
+        assert_eq!(result.seen, if native { 4 } else { 1 });
         assert_eq!(result.entry_rsp, top);
         assert!(result.handler_rsp >= bottom && result.handler_rsp < top);
-        assert_eq!(result.return_rcx, CODE + 12);
+        assert_eq!(result.return_rcx, CODE + if native { 0x53 } else { 12 });
         assert_eq!(result.user_rsp, USER_TOP);
-        assert_eq!(result.user_rax, USER_MARKER);
-        assert_eq!(result.result, USER_MARKER);
+        assert_eq!(result.user_rax, if native { 99 } else { USER_MARKER });
+        assert_eq!(result.result, if native {
+            fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL)
+        } else { USER_MARKER });
+        if native {
+            assert_eq!(result.m5ab_success, 2);
+            assert_eq!(result.m5ab_user_error, 1);
+            assert_eq!(result.m5ab_unsupported, 1);
+        }
         assert_eq!(result.process_cr3 & !0xfff, root);
         assert_eq!(result.abort_seen, 0);
         assert_eq!(proof.frame_address, top - FRAME_SIZE as u64);
@@ -528,6 +611,9 @@ pub unsafe fn ci_task_syscall(
         assert_eq!(gdt::read_rsp0(), bootstrap_rsp0);
         assert_eq!(unsafe { read_msr(0xc000_0101) }, saved_gs_base);
         assert_eq!(unsafe { read_msr(0xc000_0102) }, saved_kernel_gs_base);
+        if native {
+            serial::println("FreeWorldOS: M5-AB native dispatch: number1=42 number2=20 bad_user=-8193 unknown=-4098 calls=4 user_rsp=unchanged task_stack=yes");
+        }
         serial::write_fmt(format_args!(
             "FreeWorldOS: M5-AA task syscall: syscall=real context=task_owned entry_rsp={:#x} handler_rsp={:#x} private_stack=verified bootstrap_rsp0=separate gs=restored msrs=restored sysret=real legacy_globals=untouched scheduler=off timer_choice=off\n",
             result.entry_rsp, result.handler_rsp
@@ -1508,7 +1594,14 @@ unsafe fn enter_mode(root_phys: u64, user_rip: u64, user_rsp: u64, push_mode: bo
     EXPECTED_ROOT.store(root_phys, Ordering::Release);
     EXPECTED_RIP.store(user_rip + if push_mode { PUSH_RETURN_RIP_OFFSET } else {
         #[cfg(feature = "m5o-ci-self-test")]
-        { if M5U_MODE_ACTIVE() { 31 } else if M5S_MODE_ACTIVE() { 59 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
+        {
+            #[cfg(feature = "m5ab-ci-self-test")]
+            if M5AB_MODE.load(Ordering::Acquire) { 93 } else {
+                if M5U_MODE_ACTIVE() { 31 } else if M5S_MODE_ACTIVE() { 59 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET }
+            }
+            #[cfg(not(feature = "m5ab-ci-self-test"))]
+            { if M5U_MODE_ACTIVE() { 31 } else if M5S_MODE_ACTIVE() { 59 } else if M5R_MODE_ACTIVE() { 34 } else if M5P_MODE_ACTIVE() { 24 } else if M5O_MODE.load(Ordering::Acquire) { 14 } else { RETURN_RIP_OFFSET } }
+        }
         #[cfg(not(feature = "m5o-ci-self-test"))]
         { RETURN_RIP_OFFSET }
     }, Ordering::Release);
@@ -1602,6 +1695,13 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     assert_eq!(frame.rflags & (1 << 9), 0);
     assert_eq!(frame.rip, EXPECTED_RIP.load(Ordering::Acquire));
     assert_eq!(frame.rsp, EXPECTED_RSP.load(Ordering::Acquire));
+    #[cfg(feature = "m5ab-ci-self-test")]
+    let native_return = M5AB_MODE.load(Ordering::Acquire);
+    #[cfg(not(feature = "m5ab-ci-self-test"))]
+    let native_return = false;
+    if native_return {
+        assert_eq!(frame.rax, fw_abi::encode_error(fw_abi::FW_ERR_NO_SUCH_CALL));
+    } else {
     #[cfg(feature = "m5p-ci-self-test")]
     if M5P_MODE.load(Ordering::Acquire) {
         #[cfg(feature = "m5r-ci-self-test")]
@@ -1622,6 +1722,7 @@ extern "C" fn __freeworld_m5g_return_dispatch(frame: *const UserFrame) {
     }
     #[cfg(not(feature = "m5p-ci-self-test"))]
     assert_eq!(frame.rax, USER_MARKER);
+    }
     assert_eq!(CS::get_reg().0 & 3, 0);
 
     let process_cr3 =
