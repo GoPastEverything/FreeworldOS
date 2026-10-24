@@ -26,7 +26,7 @@ pub struct ProcessObject {
     #[cfg(feature = "m5i-ci-self-test")]
     kernel_stack: Option<super::task::KernelStack>,
     #[cfg(feature = "m5aa-ci-self-test")]
-    user_task: Option<super::task::UserSyscallTask>,
+    user_task: Option<alloc::boxed::Box<super::task::UserSyscallTask>>,
 }
 
 impl ProcessObject {
@@ -82,7 +82,10 @@ impl ProcessObject {
     pub fn new_with_syscall_task(profile: ExecutionProfile) -> Result<Self, super::ObjectError> {
         // Allocate the guarded task stack BEFORE cloning higher-half page
         // table mappings into this process's private CR3.
-        let task = super::task::UserSyscallTask::new()?;
+        // Keep ProcessObject / FwObject thin: embedding a 4-page stack
+        // descriptor inline would increase the size of *every* Arc<FwObject>
+        // and exhaust the fixed small-object heap class in existing tests.
+        let task = alloc::boxed::Box::new(super::task::UserSyscallTask::new()?);
         let mut process = Self::new(profile)?;
         process.user_task = Some(task);
         Ok(process)
