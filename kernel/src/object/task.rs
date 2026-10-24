@@ -414,6 +414,15 @@ impl Drop for TaskObject {
 pub(crate) struct UserSyscallTask {
     stack: KernelStack,
     context: alloc::boxed::Box<crate::arch::process_ring3::TaskSyscallContext>,
+    #[cfg(feature = "m5ac-ci-self-test")]
+    lifecycle: UserLifecycleState,
+}
+#[cfg(feature = "m5ac-ci-self-test")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserLifecycleState {
+    Created,
+    Running,
+    Stopped(u64),
 }
 #[cfg(feature = "m5aa-ci-self-test")]
 impl UserSyscallTask {
@@ -423,7 +432,31 @@ impl UserSyscallTask {
         let context = alloc::boxed::Box::new(
             crate::arch::process_ring3::TaskSyscallContext::new(bottom, top),
         );
-        Ok(Self { stack, context })
+        Ok(Self {
+            stack, context,
+            #[cfg(feature = "m5ac-ci-self-test")]
+            lifecycle: UserLifecycleState::Created,
+        })
+    }
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub(crate) fn lifecycle(&self) -> UserLifecycleState { self.lifecycle }
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub(crate) fn mark_running(&mut self) -> Result<(), ObjectError> {
+        if self.lifecycle != UserLifecycleState::Created {
+            return Err(ObjectError::InvalidTaskState);
+        }
+        self.lifecycle = UserLifecycleState::Running;
+        Ok(())
+    }
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub(crate) fn mark_stopped(&mut self, code: u64) {
+        assert_eq!(self.lifecycle, UserLifecycleState::Running);
+        self.lifecycle = UserLifecycleState::Stopped(code);
+    }
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub(crate) fn restore_created(&mut self) {
+        assert_eq!(self.lifecycle, UserLifecycleState::Running);
+        self.lifecycle = UserLifecycleState::Created;
     }
     pub(crate) fn context(&self) -> &crate::arch::process_ring3::TaskSyscallContext {
         &self.context
