@@ -107,6 +107,30 @@ impl ProcessObject {
         self.address_space.ci_task_native_dispatch(task.context())
     }
 
+    /// Start the admitted native user task (IF=0, no scheduler). It can be
+    /// started once only, and reaches Stopped through FW_SYS_EXIT.
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub fn start_native(&mut self) -> Result<u64, super::ObjectError> {
+        let task = self.user_task.as_mut().ok_or(super::ObjectError::InvalidTaskState)?;
+        task.mark_running()?;
+        match self.address_space.start_native_process(task.context()) {
+            Ok(proof) => {
+                task.mark_stopped(proof.exit_status);
+                Ok(proof.exit_status)
+            }
+            Err(e) => {
+                task.restore_created();
+                Err(e.into())
+            }
+        }
+    }
+
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub fn lifecycle(&self) -> Result<super::task::UserLifecycleState, super::ObjectError> {
+        let task = self.user_task.as_ref().ok_or(super::ObjectError::InvalidTaskState)?;
+        Ok(task.lifecycle())
+    }
+
     #[cfg(feature = "m5j-ci-self-test")]
     pub fn ci_private_stack_bounds(&self) -> Result<(u64, u64), MemoryError> {
         Ok(self.kernel_stack.as_ref().ok_or(MemoryError::PageNotMapped)?.bounds())
@@ -278,4 +302,16 @@ impl Drop for ProcessObject {
 
 pub fn live_count() -> usize {
     LIVE_PROCESSES.load(Ordering::Acquire)
+}
+
+/// Explicitly reclaim an exited process. A Created/Running process cannot
+/// be reaped through this lifecycle API. No implicit scheduler cleanup.
+#[cfg(feature = "m5ac-ci-self-test")]
+pub fn reap_stopped(slot: &mut Option<ProcessObject>) -> Result<u64, super::ObjectError> {
+    let status = match slot.as_ref().ok_or(super::ObjectError::InvalidTaskState)?.lifecycle()? {
+        super::task::UserLifecycleState::Stopped(code) => code,
+        _ => return Err(super::ObjectError::InvalidTaskState),
+    };
+    drop(slot.take());
+    Ok(status)
 }

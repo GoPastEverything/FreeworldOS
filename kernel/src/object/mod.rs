@@ -1485,6 +1485,62 @@ pub fn test_task_native_dispatch_ci_self_test() -> Result<(), ObjectError> {
     Ok(())
 }
 
+#[cfg(feature = "m5ac-ci-self-test")]
+pub fn test_native_lifecycle_ci_self_test() -> Result<(), ObjectError> {
+    use crate::{
+        exec::profile::{Abi, Architecture, Environment, ExecutionProfile, ImageFormat},
+        memory::PagePermissions,
+    };
+    use task::UserLifecycleState;
+    let profile = ExecutionProfile {
+        environment: Environment::FreeWorld,
+        image_format: ImageFormat::FreeWorld,
+        abi: Abi::FreeWorld64,
+        architecture: Architecture::X86_64,
+    };
+    let before = crate::memory::frame_reuse_stats()?;
+    let heap_before = crate::memory::heap::stats();
+    let live_before = process::live_count();
+    let bootstrap = crate::arch::current_tss_rsp0();
+    // This is a process-owned lifecycle, not a one-shot INT F2 roundtrip.
+    let mut owner = Some(ProcessObject::new_with_syscall_task(profile)?);
+    let created = owner.as_ref().ok_or(ObjectError::SelfTestFailed)?;
+    if created.lifecycle()? != UserLifecycleState::Created
+        || process::reap_stopped(&mut owner) != Err(ObjectError::InvalidTaskState) {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let proc = owner.as_mut().ok_or(ObjectError::SelfTestFailed)?;
+    proc.map_one_user_leaf(0x0000_5000_3000_0000, PagePermissions::user_read_execute())?;
+    proc.map_adjacent_user_stack()?;
+    let status = proc.start_native()?;
+    if status != 7 || proc.lifecycle()? != UserLifecycleState::Stopped(7)
+        || proc.start_native() != Err(ObjectError::InvalidTaskState)
+        || crate::arch::current_tss_rsp0() != bootstrap
+        || process::live_count() != live_before + 1
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-AC lifecycle: created=ok running=entered stopped=exit7 second_start=denied reaped_before_stop=denied",
+    );
+    let reaped = process::reap_stopped(&mut owner)?;
+    if reaped != 7 || owner.is_some() {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    let after = crate::memory::frame_reuse_stats()?;
+    let heap_after = crate::memory::heap::stats();
+    if after.returned_total.saturating_sub(before.returned_total) != 10
+        || process::live_count() != live_before
+        || heap_after != heap_before
+    {
+        return Err(ObjectError::SelfTestFailed);
+    }
+    crate::arch::serial::println(
+        "FreeWorldOS: M5-AC complete: create=start=exit=reap status=7 frames_returned=10 heap=unchanged live=restored int_f2=unused scheduler=off timer_choice=off",
+    );
+    Ok(())
+}
+
 #[cfg(feature = "m5p-ci-self-test")]
 pub fn test_one_number_syscall_ci_self_test() -> Result<(), ObjectError> {
     use crate::{

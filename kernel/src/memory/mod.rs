@@ -136,6 +136,14 @@ impl ProcessAddressSpace {
         crate::arch::memory::ci_task_syscall_proof(self.root_frame, leaf, context, true)
     }
 
+    #[cfg(feature = "m5ac-ci-self-test")]
+    pub fn start_native_process(
+        &self, context: &crate::arch::process_ring3::TaskSyscallContext,
+    ) -> Result<crate::arch::process_ring3::NativeExitProof, MemoryError> {
+        let leaf = self.user_leaf.as_ref().ok_or(MemoryError::PageNotMapped)?;
+        crate::arch::memory::start_native_process(self.root_frame, leaf, context)
+    }
+
     #[cfg(feature = "m5o-ci-self-test")]
     pub fn ci_syscall_sysret(&self, bottom: u64, top: u64)
         -> Result<crate::arch::process_ring3::Ring3ProcessProof, MemoryError>

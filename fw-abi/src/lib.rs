@@ -10,6 +10,10 @@ pub const FW_ERR_UNSUPPORTED: FwStatus = -4099;
 // Memory subsystem: [-8192, -8447].
 pub const FW_ERR_USER_ADDRESS: FwStatus = -8193;
 
+/// Native FreeWorld process termination. RDI carries the exit status.
+/// A successful FW_SYS_EXIT never returns to the calling user process.
+pub const FW_SYS_EXIT: u64 = 3;
+
 #[inline]
 pub const fn encode_error(status: FwStatus) -> u64 {
     assert!(status < 0);
